@@ -1,0 +1,7 @@
+{
+  "name": "screenshare-lab-server",
+  "private": true,
+  "description": "Connection (signaling) server for ScreenShare Remote labs",
+  "scripts": { "start": "node peer-server.js" },
+  "dependencies": { "peer": "1.0.2" }
+}

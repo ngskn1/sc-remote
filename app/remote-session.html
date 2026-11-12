@@ -1,0 +1,737 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ScreenShare remote</title>
+<script src="peerjs.min.js"></script>
+<script src="remote-common.js"></script>
+<script src="i18n.js"></script>
+<style>
+  :root { --bg: #0b0c10; --panel: #1a1d24; --line: #2a2e38; --text: #e6e8ee; --muted: #8b91a1; --accent: #5b8cff; --ok: #3ecf8e; --bad: #ff6b6b; --warn: #f5b84b; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: var(--text); font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  button, select, input { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
+  button { cursor: pointer; } button:hover { border-color: var(--accent); }
+  button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+  .hidden { display: none !important; }
+
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #screen { width: 100%; height: 100%; object-fit: contain; background: #000; outline: none; cursor: default; }
+
+  /* toolbar: slides down when the pointer reaches the top edge, or stays pinned */
+  #bar { position: fixed; top: 0; left: 50%; transform: translate(-50%, calc(-100% + 4px)); transition: transform .15s ease;
+         display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; max-width: calc(100vw - 16px);
+         background: rgba(20, 22, 28, .96); border: 1px solid var(--line); border-top: 0; border-radius: 0 0 10px 10px; z-index: 5; }
+  #bar.show, #bar.pinned, #bar:hover, #bar:focus-within { transform: translate(-50%, 0); }
+  #bar .who { font-weight: 600; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
+  #lat { color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; min-width: 90px; }
+  .sep { width: 1px; height: 22px; background: var(--line); }
+  label.chk { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .menu { position: relative; }
+  .menu .items { position: absolute; top: calc(100% + 4px); left: 0; display: none; flex-direction: column; gap: 2px; padding: 4px;
+                 background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-width: 170px; z-index: 6; }
+  .menu.open .items { display: flex; }
+  .menu .items button { border: 0; text-align: left; background: transparent; }
+  .menu .items button:hover { background: #262a33; }
+
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.6); z-index: 4; }
+  #overlay .box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 22px 26px; max-width: 460px; text-align: center; display: flex; flex-direction: column; gap: 12px; }
+  #overlay .msg { font-size: 15px; }
+  #overlay.err .msg { color: var(--bad); }
+  #retryBox { display: flex; gap: 8px; justify-content: center; }
+
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line);
+           border-radius: 8px; padding: 8px 14px; z-index: 7; max-width: 80vw; }
+
+  /* files drawer */
+  #files { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 92vw); background: rgba(20,22,28,.98); border-left: 1px solid var(--line);
+           z-index: 6; display: flex; flex-direction: column; }
+  #files header { display: flex; align-items: center; gap: 6px; padding: 10px; border-bottom: 1px solid var(--line); }
+  #files header b { flex: 1; }
+  #pathbar { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); align-items: center; }
+  #path { flex: 1; min-width: 0; }
+  #list { flex: 1; overflow: auto; padding: 4px 0; }
+  .ent { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer; }
+  .ent:hover { background: #232733; }
+  .ent .n { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ent .s { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #transfers { border-top: 1px solid var(--line); max-height: 35%; overflow: auto; }
+  .tr { padding: 6px 12px; display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid var(--line); }
+  .tr .top { display: flex; gap: 8px; align-items: center; }
+  .tr .top span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tr progress { width: 100%; height: 6px; }
+  .tr a { color: var(--accent); cursor: pointer; }
+  #acts { position: fixed; left: 12px; bottom: 12px; display: flex; flex-direction: column; gap: 6px; z-index: 7; max-width: min(460px, 80vw); }
+  .act { background: rgba(26,29,36,.97); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; display: flex; flex-direction: column; gap: 5px; }
+  .act .top { display: flex; gap: 10px; align-items: center; }
+  .act .top span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .act a { color: var(--accent); cursor: pointer; white-space: nowrap; }
+  .act progress { width: 100%; height: 5px; }
+  .act.ok { border-color: var(--ok); } .act.bad { border-color: var(--bad); }
+  #auditBox { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 9; display: flex; align-items: center; justify-content: center; }
+  #auditBox .abox { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; width: min(820px, 94vw); max-height: 80vh; display: flex; flex-direction: column; }
+  #auditBox header { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  #auditBox .ascroll { overflow: auto; padding: 6px 14px 14px; }
+  #auditBox table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  #auditBox td, #auditBox th { text-align: left; padding: 4px 8px; border-bottom: 1px solid #262a33; white-space: nowrap; }
+  #drop { position: fixed; inset: 0; border: 3px dashed var(--accent); background: rgba(91,140,255,.12); z-index: 8; display: flex;
+          align-items: center; justify-content: center; font-size: 20px; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="stage"><video id="screen" autoplay playsinline muted tabindex="0"></video></div>
+
+<div id="bar">
+  <span class="who"><span class="dot" id="dot"></span><span id="who">…</span></span>
+  <span id="lat"></span>
+  <span class="sep"></span>
+  <select id="display" title="Which screen to show"></select>
+  <select id="quality" title="Sharp keeps text crisp; Smooth keeps motion fluid on slow connections">
+    <option value="sharp">Sharp text</option><option value="smooth">Smooth</option>
+  </select>
+  <select id="fps" title="Frames per second"><option>15</option><option selected>30</option><option>60</option></select>
+  <select id="codec" title="Video codec"><option value="VP8">VP8</option><option value="H264">H.264</option><option value="VP9">VP9</option></select>
+  <span class="sep"></span>
+  <label class="chk" title="Copy on one computer, paste on the other (text and images)"><input type="checkbox" id="clip" checked> Clipboard</label>
+  <button id="filesBtn" title="Browse the remote PC's files, download, upload (or drop files on this window)">Files</button>
+  <div class="menu" id="keysMenu"><button id="keysBtn" title="Send keys this computer would otherwise catch">Keys ▾</button>
+    <div class="items">
+      <button data-keys="ControlLeft AltLeft Delete">Ctrl + Alt + Del</button>
+      <button data-keys="AltLeft Tab">Alt + Tab</button>
+      <button data-keys="MetaLeft">Windows / Super key</button>
+      <button data-keys="AltLeft F4">Alt + F4</button>
+      <button data-keys="PrintScreen">Print Screen</button>
+      <button data-keys="ControlLeft AltLeft KeyL">Ctrl + Alt + L (lock)</button>
+    </div>
+  </div>
+  <button id="fs" title="Fullscreen (in fullscreen, Alt+Tab and the Windows key go to the remote PC; hold Esc to leave)">Fullscreen</button>
+  <button id="auditBtn" class="hidden" title="Who connected to this PC, and when (lab admins)">Log</button>
+  <label class="chk" title="Keep this toolbar visible"><input type="checkbox" id="pin"> Pin</label>
+  <button id="disc" class="danger">Disconnect</button>
+</div>
+
+<div id="overlay"><div class="box">
+  <div class="msg" id="omsg">Connecting…</div>
+  <div id="retryBox" class="hidden"><input id="pw" type="password" placeholder="Password"><button id="retry">Connect</button></div>
+  <div id="againBox" class="hidden"><button id="trust" class="hidden">Trust the new identity</button> <button id="again">Connect again</button> <button id="closeWin">Close</button></div>
+</div></div>
+
+<div id="files" class="hidden">
+  <header><b>Files on <span id="fname"></span></b><button id="upBtn">Upload…</button><button id="closeFiles">✕</button></header>
+  <div id="pathbar"><button id="parent" title="Up one folder">↑</button><button id="homeBtn" title="Home folder">⌂</button><input id="path" spellcheck="false"></div>
+  <div id="list"></div>
+  <div id="transfers"></div>
+  <input type="file" id="picker" multiple class="hidden">
+</div>
+<div id="drop" class="hidden">Release where you want the files on the remote PC</div>
+<div id="acts"></div>
+<div id="toast" class="hidden"></div>
+<div id="auditBox" class="hidden"><div class="abox">
+  <header><b>Connection log of this PC</b><button id="closeAudit">✕</button></header>
+  <div class="ascroll"><table><thead><tr><th>When</th><th>What</th><th>Who</th><th></th></tr></thead><tbody id="auditRows"></tbody></table></div>
+</div></div>
+
+<script>
+'use strict';
+const R = window.remoteApp;
+const $ = id => document.getElementById(id);
+const video = $('screen');
+const store = (() => { try { return JSON.parse(localStorage.getItem('remote-session-prefs')) || {}; } catch { return {}; } })();
+const q = { fps: store.fps || 30, sharp: store.sharp !== false, codec: store.codec || 'VP8', clip: store.clip !== false };
+const savePrefs = () => { try { localStorage.setItem('remote-session-prefs', JSON.stringify(q)); } catch {} };
+$('fps').value = q.fps; $('quality').value = q.sharp ? 'sharp' : 'smooth'; $('codec').value = q.codec; $('clip').checked = q.clip;
+
+let creds = null, peer = null, ctl = null, token = null, call = null, pendingCall = null;
+let displays = [], current = 0, wantDisplay = null, ended = false, retries = 0, retryTimer = null, hostName = '';
+let hostOs = '', myRole = null, pendingHostKey = null, hostCaps = {};
+
+/* ---------------- ui helpers ---------------- */
+// mode: 'password' asks for it again; 'again' offers to reconnect after the other side ended the session
+function overlay(text, kind = '', mode = '') {
+  if (mode === true) mode = 'password';
+  $('overlay').classList.toggle('hidden', !text);
+  $('overlay').classList.toggle('err', kind === 'err');
+  $('omsg').textContent = t(text || '');             // (messages from the other PC are in English: translated here)
+  $('againBox').classList.toggle('hidden', mode !== 'again' && mode !== 'trust');
+  $('trust').classList.toggle('hidden', mode !== 'trust');
+  const askPassword = mode === 'password';
+  $('retryBox').classList.toggle('hidden', !askPassword);
+  if (askPassword) setTimeout(() => $('pw').focus(), 50);
+}
+function dot(kind) { $('dot').className = 'dot ' + kind; }
+let toastTimer = null;
+function toast(text, ms = 4000) { $('toast').textContent = t(text); $('toast').classList.remove('hidden'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.add('hidden'), ms); }
+const send = m => { if (ctl && ctl.open && token) ctl.send(m); };
+
+/* ---------------- connection ---------------- */
+function connect() {
+  clearTimeout(retryTimer);
+  // detach first: destroying the old peer fires its connections' close events, which must not count as "lost"
+  const old = peer;
+  peer = null; ctl = null; token = null; pendingCall = null;
+  if (old && !old.destroyed) old.destroy();
+  dot('warn');
+  const p = peer = new Peer(peerOptions());
+  p.on('open', () => {
+    const c = ctl = p.connect(creds.peerId, { label: 'ctl', serialization: 'binary', reliable: true });
+    c.on('data', m => onControl(c, m));
+    c.on('close', () => { if (ctl === c && peer === p) lost(); });
+    c.on('error', () => {});
+  });
+  p.on('call', c => {
+    if (!token) { pendingCall = c; return; }           // arrived before the sign-in reply: decide once it's in
+    takeCall(c);
+  });
+  p.on('error', e => {
+    if (peer !== p) return;
+    // once connected, the session runs directly between the PCs: a signaling-server hiccup doesn't matter
+    if (token && ctl && ctl.open && ['network', 'server-error', 'socket-error', 'socket-closed', 'disconnected'].includes(e.type)) {
+      setTimeout(() => { if (peer === p && !p.destroyed && p.disconnected) p.reconnect(); }, 3000);
+      return;
+    }
+    if (e.type === 'peer-unavailable') lost(creds.mode === 'lab'
+      ? `${creds.pc} isn't reachable: it's off or offline, the name doesn't match its computer name, or it isn't set up as a lab PC (no ScreenShare Remote agent running on it).`
+      : t('{0} is offline (PC off or asleep, or ScreenShare not running).', creds.name || creds.id));
+    else lost(t('Connection problem ({0}).', e.type));
+  });
+  p.on('disconnected', () => { setTimeout(() => { if (peer === p && !p.destroyed && p.disconnected) p.reconnect(); }, 1000); });
+}
+
+function takeCall(c) {
+  if (!c.metadata || c.metadata.token !== token) { try { c.close(); } catch {} return; }
+  const prev = call; call = c;
+  c.answer(undefined, { sdpTransform: s => remoteSdp(s, q.codec, q.sharp ? 12000 : 6000) });
+  c.on('stream', st => {
+    if (call !== c) return;
+    if (video.srcObject !== st) { video.srcObject = st; video.play().catch(() => {}); }
+    c.peerConnection.getReceivers().forEach(r => { try { r.jitterBufferTarget = 0; } catch {} try { r.playoutDelayHint = 0; } catch {} });
+    overlay(null); dot('ok'); retries = 0;
+    video.focus();
+  });
+  c.on('close', () => { if (call === c) call = null; });
+  if (prev) setTimeout(() => { try { prev.close(); } catch {} }, 300);
+}
+
+async function onControl(c, m) {
+  if (!m || typeof m !== 'object' || c !== ctl) return;
+  switch (m.t) {
+    case 'hello': {
+      hostName = m.name || '';
+      overlay('Signing in…');
+      const prefs = { fps: q.fps, sharp: q.sharp, codec: q.codec, clip: q.clip };
+      if (wantDisplay != null) prefs.display = wantDisplay;
+      if (creds.mode === 'lab') {
+        if (m.mode !== 'lab' || m.labId !== creds.labId) { ended = true; overlay(`That is not ${creds.pc} of ${creds.lab}.`, 'err', 'again'); return; }
+        hostOs = m.os;
+        const r = await labSignIn(c, m, creds, 'session', prefs);
+        if (!r.ok) {
+          ended = true; dot('bad');
+          if (r.changed) { pendingHostKey = m.hostKey; overlay(r.reason, 'err', 'trust'); }
+          else overlay(r.reason, 'err', 'again');
+          try { c.close(); } catch {}
+        }
+        return;
+      }
+      let mac;
+      hostCaps = m.caps || {};
+      // newer hosts: tie the password check to this encrypted connection
+      const [mine, theirs] = dtlsFingerprints(c);
+      const bound = hostCaps.bound && mine && theirs ? { hostFp: theirs, clientFp: mine } : null;
+      try { mac = await signNonce(creds.password, m.salt, m.nonce, bound); } catch (e) { overlay(t('Sign-in failed: ') + e.message, 'err'); return; }
+      c.send({ t: 'auth', mac, bound: !!bound, name: creds.me || 'remote PC', ...prefs });   // prefs include the screen you were on
+      break;
+    }
+    case 'ok':
+      token = m.token; displays = m.displays || []; current = m.current; hostName = m.name || hostName; hostOs = m.os || hostOs;
+      if (m.policy) R.labOffer(creds.labId, m.policy);          // the PC had a newer lab policy: keep it
+      if (creds.mode === 'lab') R.labRemember(creds.labId, hostName || creds.pc);   // connection history
+      else R.signedIn(creds.password);                         // save the PC / its password only now that it worked
+      myRole = m.role || null;
+      $('auditBtn').classList.toggle('hidden', myRole !== 'admin');
+      if (m.allow) {                                              // the lab may turn clipboard / files off
+        if (!m.allow.clipboard) { q.clip = false; $('clip').checked = false; $('clip').disabled = true; $('clip').parentElement.title = 'Turned off for this lab'; }
+        if (!m.allow.files) { $('filesBtn').disabled = true; $('filesBtn').title = 'Turned off for this lab'; }
+      }
+      fillDisplays();
+      overlay('Starting video…');
+      R.clipWatch(q.clip);
+      if (pendingCall) { const pc = pendingCall; pendingCall = null; takeCall(pc); }
+      break;
+    case 'denied':
+      ended = true; dot('bad');
+      overlay(m.reason || 'Access denied', 'err', /password/i.test(m.reason || '') ? 'password' : 'again');
+      break;
+    case 'bye':
+      ended = true; dot('bad'); cleanupVideo();
+      overlay(m.reason || 'Disconnected', '', 'again');
+      break;
+    case 'display': current = m.i; wantDisplay = m.i; $('display').value = String(m.i); break;
+    case 'clip': if (q.clip) R.clipSet({ kind: m.kind, data: m.kind === 'image' ? toBytes(m.data) : String(m.data) }); break;
+    case 'pong': rtt = Math.round(performance.now() - m.ts); lastPong = performance.now(); break;
+    case 'notice': toast(m.text, 8000); R.log('notice from the other PC: ' + m.text); break;
+    case 'audit': showAudit(m.items || []); break;
+    case 'desktop': toast(m.name === 'Default' ? 'Back on the desktop' : 'Showing the sign-in / lock / administrator prompt screen', 5000); break;
+    case 'clip-files': receiveClipFiles(m); break;
+    case 'drop-result':
+      if (pendingDrop) {
+        const a = pendingDrop; pendingDrop = null;
+        if (m.ok) a.done(t('Dropped {0} item(s) on {1}. If they didn\'t land where you wanted, press Ctrl+V there.', m.n, hostLabel()), 9000);
+        else a.fail(t('Couldn\'t drop there ({0}). They\'re on {1}\'s clipboard: press Ctrl+V there.', t(m.reason), hostLabel()));
+      }
+      break;
+  }
+}
+
+function lostByTimeout() {
+  const old = peer; peer = null; ctl = null;          // detach, so its close events aren't counted twice
+  if (old && !old.destroyed) old.destroy();
+  lost('The connection stopped responding.');
+}
+function lost(reason) {
+  token = null;
+  R.clipWatch(false);
+  if (ended) return;
+  cleanupVideo();
+  dot('bad');
+  const wait = Math.min(5000, 1500 * 2 ** Math.min(retries++, 2));     // 1.5 s, 3 s, then every 5 s
+  overlay(t('{0} Reconnecting in {1} s…', t(reason || 'Connection lost.'), Math.round(wait / 1000)));
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(connect, wait);
+}
+function cleanupVideo() { video.srcObject = null; if (call) { try { call.close(); } catch {} call = null; } }
+
+function fillDisplays() {
+  $('display').replaceChildren(...displays.map(d => new Option(d.label, String(d.i))));
+  $('display').value = String(current);
+  $('display').classList.toggle('hidden', displays.length < 2);
+}
+
+/* ---------------- toolbar ---------------- */
+$('display').onchange = () => { wantDisplay = +$('display').value; send({ t: 'display', i: wantDisplay }); };
+$('quality').onchange = () => { q.sharp = $('quality').value === 'sharp'; savePrefs(); send({ t: 'quality', sharp: q.sharp }); };
+$('fps').onchange = () => { q.fps = +$('fps').value; savePrefs(); send({ t: 'quality', fps: q.fps }); };
+$('codec').onchange = () => { q.codec = $('codec').value; savePrefs(); send({ t: 'quality', codec: q.codec }); toast('Switching codec…', 2000); };
+$('clip').onchange = () => { q.clip = $('clip').checked; savePrefs(); R.clipWatch(q.clip && !!token); send({ t: 'clip-sync', on: q.clip }); };
+$('pin').onchange = () => $('bar').classList.toggle('pinned', $('pin').checked);
+$('disc').onclick = () => {
+  ended = true; send({ t: 'release' }); leave();
+  // give the goodbye a moment to leave before the connection and window go away
+  setTimeout(() => { try { ctl && ctl.close(); } catch {} cleanupVideo(); window.close(); }, 200);
+};
+$('fs').onclick = toggleFullscreen;
+$('keysBtn').onclick = e => { e.stopPropagation(); $('keysMenu').classList.toggle('open'); };
+document.addEventListener('click', () => $('keysMenu').classList.remove('open'));
+for (const b of document.querySelectorAll('[data-keys]')) b.onclick = () => {
+  const keys = b.dataset.keys.split(' ');
+  if ((creds.mode === 'lab' || hostCaps.sas) && b.dataset.keys === 'ControlLeft AltLeft Delete') { send({ t: 'sas' }); $('keysMenu').classList.remove('open'); video.focus(); return; }
+  keys.forEach(k => send({ t: 'k', c: k, d: 1 }));
+  [...keys].reverse().forEach(k => send({ t: 'k', c: k, d: 0 }));
+  $('keysMenu').classList.remove('open'); video.focus();
+};
+$('retry').onclick = () => { creds.password = $('pw').value; $('pw').value = ''; ended = false; retries = 0; connect(); overlay('Connecting…'); };
+$('pw').addEventListener('keydown', e => { if (e.key === 'Enter') $('retry').click(); });
+$('again').onclick = () => { ended = false; retries = 0; overlay('Connecting…'); connect(); };
+$('trust').onclick = async () => {
+  await R.labTrustHost(creds.labId, creds.pc, pendingHostKey);
+  ended = false; retries = 0; overlay('Connecting…'); connect();
+};
+$('auditBtn').onclick = () => send({ t: 'audit-get' });
+$('closeAudit').onclick = () => $('auditBox').classList.add('hidden');
+function showAudit(items) {
+  const rows = items.slice().reverse().map(e => {
+    const tr = document.createElement('tr');
+    const who = e.member || e.name || e.key || e.deliveredBy || '';
+    const extra = e.event === 'disconnect' ? `${e.minutes} min` : e.reason || (e.version ? 'v' + e.version : '') || e.role || '';
+    for (const v of [new Date(e.t).toLocaleString(), e.event, who, extra]) { const td = document.createElement('td'); td.textContent = v; tr.append(td); }
+    return tr;
+  });
+  $('auditRows').replaceChildren(...rows);
+  $('auditBox').classList.remove('hidden');
+}
+$('closeWin').onclick = () => window.close();
+
+// show the toolbar when the pointer touches the top edge
+addEventListener('pointermove', e => { $('bar').classList.toggle('show', e.clientY < 6 || $('bar').contains(e.target)); });
+
+async function toggleFullscreen() {
+  if (document.fullscreenElement) { await document.exitFullscreen().catch(() => {}); return; }
+  await document.documentElement.requestFullscreen().catch(() => {});
+  // capture system keys (Alt+Tab, Windows key…) for the remote PC while fullscreen
+  try { if (navigator.keyboard && navigator.keyboard.lock) await navigator.keyboard.lock(); } catch {}
+  video.focus();
+}
+document.addEventListener('fullscreenchange', () => {
+  $('fs').textContent = t(document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen');
+  if (!document.fullscreenElement && navigator.keyboard && navigator.keyboard.unlock) navigator.keyboard.unlock();
+});
+
+/* ---------------- mouse ---------------- */
+// position inside the visible picture (the video is letterboxed with object-fit: contain)
+function norm(e) {
+  const r = video.getBoundingClientRect(), vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return null;
+  const s = Math.min(r.width / vw, r.height / vh), w = vw * s, h = vh * s;
+  const x = (e.clientX - r.left - (r.width - w) / 2) / w, y = (e.clientY - r.top - (r.height - h) / 2) / h;
+  return { x: Math.min(Math.max(x, 0), 1), y: Math.min(Math.max(y, 0), 1), inside: x >= 0 && x <= 1 && y >= 0 && y <= 1 };
+}
+let movePending = null;
+video.addEventListener('pointermove', e => {
+  const p = norm(e); if (!p) return;
+  if (!movePending) requestAnimationFrame(() => { if (movePending) send({ t: 'm', x: movePending.x, y: movePending.y }); movePending = null; });
+  movePending = p;
+});
+const BTN = { 0: 1, 1: 2, 2: 3, 3: 8, 4: 9 };
+video.addEventListener('pointerdown', e => {
+  const p = norm(e); if (!p || !p.inside) return;
+  e.preventDefault(); video.focus(); video.setPointerCapture(e.pointerId);
+  send({ t: 'm', x: p.x, y: p.y }); movePending = null;
+  send({ t: 'b', b: BTN[e.button], d: 1 });
+});
+video.addEventListener('pointerup', e => {
+  const p = norm(e); if (p) send({ t: 'm', x: p.x, y: p.y }); movePending = null;
+  send({ t: 'b', b: BTN[e.button], d: 0 });
+});
+video.addEventListener('contextmenu', e => e.preventDefault());
+video.addEventListener('auxclick', e => e.preventDefault());
+// wheel: turn pixels into notches (Chromium reports ~100 px per notch on Windows, ~53 on Linux); touchpads add up
+const NOTCH = R.platform === 'win32' ? 100 : 53;
+let acc = { x: 0, y: 0 };
+video.addEventListener('wheel', e => {
+  e.preventDefault();
+  const k = e.deltaMode === 1 ? NOTCH / 3 : e.deltaMode === 2 ? NOTCH * 10 : 1;
+  acc.x += e.deltaX * k; acc.y += e.deltaY * k;
+  const dx = Math.trunc(acc.x / NOTCH), dy = Math.trunc(acc.y / NOTCH);
+  if (dx || dy) { acc.x -= dx * NOTCH; acc.y -= dy * NOTCH; send({ t: 'w', dx, dy }); }
+}, { passive: false });
+
+/* ---------------- keyboard: physical keys, the remote PC applies its own layout ---------------- */
+const ours = t => t && t.closest && t.closest('#bar, #files, #overlay');
+addEventListener('keydown', e => {
+  if (ours(e.target) || !token) return;
+  e.preventDefault(); e.stopPropagation();
+  send({ t: 'k', c: e.code, d: 1, r: e.repeat });
+}, true);
+addEventListener('keyup', e => {
+  if (ours(e.target) || !token) return;
+  e.preventDefault(); e.stopPropagation();
+  send({ t: 'k', c: e.code, d: 0 });
+}, true);
+// never leave keys or buttons held on the remote PC when this window loses focus
+addEventListener('blur', () => send({ t: 'release' }));
+document.addEventListener('visibilitychange', () => { if (document.hidden) send({ t: 'release' }); });
+
+/* ---------------- clipboard ---------------- */
+R.onClip(p => {
+  if (!q.clip || !token) return;
+  if (p.kind === 'files') { sendClipFiles(p.paths); return; }
+  send({ t: 'clip', kind: p.kind, data: p.data });
+});
+
+// closing this window: tell the PC right away (otherwise it notices only after a few seconds)
+const leave = () => { try { if (ctl && ctl.open && token) ctl.send({ t: 'leave' }); } catch {} };
+addEventListener('pagehide', leave);
+// the window is closing: say goodbye, then close the connection properly (the PC sees it end right away)
+if (R.onClosing) R.onClosing(() => {
+  ended = true; leave();
+  setTimeout(() => { try { if (ctl) ctl.close(); } catch {} try { if (peer) peer.destroy(); } catch {} window.close(); }, 200);
+});
+
+/* ---------------- latency / stats ---------------- */
+let rtt = null, lastPong = 0;
+setInterval(async () => {
+  if (!token) { $('lat').textContent = ''; lastPong = 0; return; }
+  // a PC that crashed or lost its network doesn't say goodbye: notice within a few seconds
+  if (!lastPong) lastPong = performance.now();
+  if (performance.now() - lastPong > 7000) { lostByTimeout(); return; }
+  send({ t: 'ping', ts: performance.now() });
+  let fps = '';
+  if (call && call.peerConnection) {
+    const stats = await call.peerConnection.getStats();
+    stats.forEach(r => { if (r.type === 'inbound-rtp' && r.kind === 'video') fps = Math.round(r.framesPerSecond || 0) + ' fps'; });
+  }
+  $('lat').textContent = (rtt != null ? rtt + ' ms' : '') + (fps ? ' · ' + fps : '');
+  dot(rtt == null ? 'warn' : rtt < 80 ? 'ok' : rtt < 200 ? 'warn' : 'bad');
+}, 2000);
+
+/* ---------------- files ---------------- */
+let fconn = null, fconnP = null, reqId = 1, cwd = null, home = null;
+const reqs = new Map();
+function filesConn() {
+  if (fconn && fconn.open) return Promise.resolve(fconn);
+  if (fconnP) return fconnP;
+  fconnP = new Promise((resolve, reject) => {
+    if (!token || !peer) return reject(new Error('not connected'));
+    const c = peer.connect(creds.peerId, { label: 'files', serialization: 'binary', reliable: true, metadata: { token } });
+    const t = setTimeout(() => reject(new Error('file connection timed out')), 20000);
+    c.on('open', () => { clearTimeout(t); fconn = c; resolve(c); });
+    c.on('data', onFilesData);
+    c.on('close', () => { if (fconn === c) fconn = null; for (const [id, r] of reqs) { r.fail && r.fail(new Error('connection closed')); reqs.delete(id); } });
+    c.on('error', e => { clearTimeout(t); reject(e); });
+  }).finally(() => { fconnP = null; });
+  return fconnP;
+}
+function onFilesData(m) {
+  const r = m && reqs.get(m.id); if (!r) return;
+  if (m.ok === false) { reqs.delete(m.id); r.fail(new Error(m.error)); return; }
+  if (m.chunk !== undefined) { r.chunk && r.chunk(toBytes(m.chunk)); return; }
+  if (m.done || m.saved !== undefined) { reqs.delete(m.id); r.done && r.done(m); return; }
+  r.first && r.first(m);
+  if (!r.chunk && !r.done) reqs.delete(m.id);
+}
+async function request(msg, handlers) {
+  const c = await filesConn();
+  const id = reqId++;
+  reqs.set(id, handlers);
+  c.send({ ...msg, id });
+  return id;
+}
+function list(path) {
+  return new Promise((resolve, reject) => request({ op: 'list', path }, { first: resolve, fail: reject }).catch(reject));
+}
+async function openDir(path, fallback = false) {
+  try {
+    const d = await list(path);
+    cwd = d.path; home = home || d.home;
+    if (lastSavedDir !== d.path) { lastSavedDir = d.path; R.filesDir(d.path); }      // reopen here next time
+    $('path').value = d.path;
+    $('parent').disabled = !d.parent; $('parent').dataset.p = d.parent || '';
+    const rows = d.entries.map(en => {
+      const row = document.createElement('div'); row.className = 'ent';
+      const n = document.createElement('span'); n.className = 'n'; n.textContent = (en.dir ? '📁 ' : '📄 ') + en.name;
+      const s = document.createElement('span'); s.className = 's'; s.textContent = en.dir ? '' : fmtBytes(en.size);
+      row.append(n, s);
+      row.title = t(en.dir ? 'Open folder' : 'Download to this PC');
+      row.onclick = () => en.dir ? openDir(d.path + (d.path.endsWith(d.sep) ? '' : d.sep) + en.name) : download(d.path + (d.path.endsWith(d.sep) ? '' : d.sep) + en.name);
+      return row;
+    });
+    if (!rows.length) { const e = document.createElement('div'); e.className = 'ent'; e.style.color = 'var(--muted)'; e.textContent = t('Empty folder'); rows.push(e); }
+    $('list').replaceChildren(...rows);
+  } catch (e) {
+    if (fallback) return openDir('');                      // last time's folder is gone: start at home
+    toast(t('Could not open folder: ') + e.message);
+  }
+}
+let lastSavedDir = null;
+// first time the panel opens in this session: where it was last time with this PC (or the home folder)
+async function openFirstDir() { const last = await R.filesDir(null).catch(() => null); openDir(last || '', !!last); }
+function transferRow(label) {
+  const el = document.createElement('div'); el.className = 'tr';
+  const top = document.createElement('div'); top.className = 'top';
+  const name = document.createElement('span'); name.textContent = label;
+  const act = document.createElement('a'); act.textContent = t('Cancel');
+  top.append(name, act);
+  const bar = document.createElement('progress'); bar.max = 1; bar.value = 0;
+  el.append(top, bar); $('transfers').prepend(el);
+  return { el, name, act, bar };
+}
+async function download(path) {
+  const ui = transferRow('⬇ ' + path.split(/[\\/]/).pop());
+  let handle = null, outPath = null, got = 0, size = 0, writes = Promise.resolve(), id = null, cancelled = false;
+  ui.act.onclick = () => { cancelled = true; if (fconn && id) fconn.send({ op: 'cancel', id }); };
+  try {
+    const dir = await R.fsDownloads();
+    await new Promise((resolve, reject) => {
+      request({ op: 'get', path }, {
+        first: async m => { size = m.size; const f = await R.fsOpenWrite(dir, m.name); handle = f.handle; outPath = f.path; },
+        chunk: data => { got += data.length; ui.bar.value = size ? got / size : 1;
+                         writes = writes.then(async () => { while (!handle) await new Promise(r => setTimeout(r, 10)); await R.fsWrite(handle, data); }); },
+        done: m => { writes.then(resolve, reject); cancelled = cancelled || m.cancelled; },
+        fail: reject,
+      }).then(i => { id = i; }, reject);
+    });
+    await R.fsClose(handle, cancelled ? outPath : null);
+    ui.bar.value = 1;
+    if (cancelled) { ui.act.textContent = t('Cancelled'); ui.act.onclick = null; return; }
+    ui.act.textContent = t('Show'); ui.act.onclick = () => R.fsReveal(outPath);
+    toast(t('Downloaded to ') + outPath);
+  } catch (e) {
+    if (handle) await R.fsClose(handle, outPath).catch(() => {});
+    ui.act.textContent = t('Failed: ') + e.message; ui.act.onclick = null;
+  }
+}
+/* ---------- transfers of files and whole folders (paths on this PC <-> the remote PC) ---------- */
+const CLIP_LIMIT = 2 * 1024 ** 3;            // larger copies don't go through the clipboard automatically
+let pendingDrop = null, clipGen = 0, pullGen = 0;
+const hostLabel = () => creds.name || hostName || t('the remote PC');
+const describe = w => `${w.roots.length === 1 ? w.roots[0] : t('{0} items', w.roots.length)} (${fmtBytes(w.total)})`;
+function rpc(msg) { return new Promise((resolve, reject) => request(msg, { first: resolve, fail: reject }).catch(reject)); }
+function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); promise.catch(() => {}); return { promise, resolve, reject }; }
+
+// a small progress card in the corner; returns controls for it
+function activity(label) {
+  const el = document.createElement('div'); el.className = 'act';
+  const top = document.createElement('div'); top.className = 'top';
+  const text = document.createElement('span'); text.textContent = label; text.title = label;
+  const btn = document.createElement('a'); btn.textContent = t('Cancel');
+  const bar = document.createElement('progress'); bar.max = 1; bar.value = 0;
+  top.append(text, btn); el.append(top, bar); $('acts').append(el);
+  const a = { cancelled: false };
+  btn.onclick = () => { a.cancelled = true; a.cancelRemote && a.cancelRemote(); };
+  const close = ms => setTimeout(() => el.remove(), ms);
+  a.set = (frac, t) => { bar.value = frac; if (t) { text.textContent = t; text.title = t; } };
+  a.done = (t, ms = 6000) => { el.classList.add('ok'); bar.remove(); text.textContent = t; text.title = t; btn.textContent = '✕'; btn.onclick = () => el.remove(); close(ms); };
+  a.fail = t => { R.log('transfer: ' + t); el.classList.add('bad'); bar.remove(); text.textContent = t; text.title = t; btn.textContent = '✕'; btn.onclick = () => el.remove(); close(12000); };
+  return a;
+}
+
+// send local files/folders (already walked) to the remote PC: into a fresh staging folder there, or into `dest`
+async function pushWalk(w, dest, a, stale = () => false) {
+  const c = await filesConn();
+  let base, map = {};
+  if (dest === 'stage') base = (await rpc({ op: 'stage' })).path;
+  else { base = dest; const r = await rpc({ op: 'unique', base, names: w.roots }); w.roots.forEach((n, i) => { map[n] = r.names[i]; }); }
+  const remap = rel => { const i = rel.indexOf('/'); const top = i < 0 ? rel : rel.slice(0, i); return (map[top] || top) + (i < 0 ? '' : rel.slice(i)); };
+  let sent = 0;
+  for (const it of w.items) {
+    if (a.cancelled || stale()) throw new Error('cancelled');
+    const rel = remap(it.rel);
+    if (it.dir) { await rpc({ op: 'mkdir', base, rel }); continue; }
+    const first = deferred(), done = deferred();
+    const id = await request({ op: 'put', base, rel, size: it.size }, { first: first.resolve, done: done.resolve, fail: e => { first.reject(e); done.reject(e); } });
+    await first.promise;
+    const f = await R.fsOpenRead(it.path);
+    let cancel = false;
+    try {
+      for (let off = 0; off < f.size; ) {
+        if (a.cancelled || stale()) { cancel = true; break; }
+        const data = await R.fsRead(f.handle, off, CHUNK);
+        if (!data.length) break;
+        await drain(c);
+        c.send({ op: 'chunk', id, data });
+        off += data.length; sent += data.length;
+        a.set(w.total ? sent / w.total : 1);
+      }
+    } finally { await R.fsClose(f.handle); }
+    c.send({ op: 'end', id, cancel });
+    await done.promise;
+    if (cancel) throw new Error('cancelled');
+  }
+  a.set(1);
+  return { base, roots: w.roots.map(r => map[r] || r) };
+}
+
+// fetch remote files/folders (as described by the remote PC) into a fresh staging folder here
+async function pullItems(m, a, stale = () => false) {
+  const base = await R.fsStage();
+  let got = 0;
+  for (const it of m.items) {
+    if (a.cancelled || stale()) throw new Error('cancelled');
+    if (it.dir) { await R.fsMkdirRel(base, it.rel); continue; }
+    const f = await R.fsOpenWriteRel(base, it.rel);
+    let writes = Promise.resolve();
+    try {
+      await new Promise((resolve, reject) => {
+        request({ op: 'get', path: it.path }, {
+          first: () => {},
+          chunk: d => { got += d.length; a.set(m.total ? got / m.total : 1); writes = writes.then(() => R.fsWrite(f.handle, d)); },
+          done: r => writes.then(() => (r.cancelled ? reject(new Error('cancelled')) : resolve()), reject),
+          fail: reject,
+        }).then(id => { a.cancelRemote = () => fconn && fconn.send({ op: 'cancel', id }); }, reject);
+      });
+    } finally { await R.fsClose(f.handle); }
+  }
+  return R.fsJoin(base, m.roots);
+}
+
+// Ctrl+C on this PC → files go to the remote PC and onto its clipboard
+async function sendClipFiles(paths) {
+  const gen = ++clipGen;
+  let w;
+  try { w = await R.fsWalk(paths); } catch (e) { toast(t('Could not read the copied files: ') + e.message); return; }
+  if (w.total > CLIP_LIMIT) { toast(t('The copied files are {0}, too big to send through the clipboard. Use Files ▸ Upload.', fmtBytes(w.total)), 9000); return; }
+  const a = activity(t('📋 Copying {0} to {1}…', describe(w), hostLabel()));
+  try {
+    const { base, roots } = await pushWalk(w, 'stage', a, () => gen !== clipGen);
+    send({ t: 'clip-files', base, roots });
+    a.done(t('📋 Ready: press Ctrl+V on {0} to paste {1}', hostLabel(), describe(w)));
+  } catch (e) { e.message === 'cancelled' ? a.fail(t('Copy cancelled')) : a.fail(t('Copy failed: ') + e.message); }
+}
+
+// Ctrl+C on the remote PC → files come here and onto this clipboard
+async function receiveClipFiles(m) {
+  if (!q.clip) return;
+  const gen = ++pullGen;
+  if (m.total > CLIP_LIMIT) { toast(t('Files copied on {0} are {1}, too big for the clipboard. Use the Files panel.', hostLabel(), fmtBytes(m.total)), 9000); return; }
+  const a = activity(t('📋 Getting {0} from {1}…', describe(m), hostLabel()));
+  try {
+    const paths = await pullItems(m, a, () => gen !== pullGen);
+    await R.clipSet({ kind: 'files', paths });
+    a.done(t('📋 Ready: press Ctrl+V here to paste {0}', describe(m)));
+  } catch (e) { e.message === 'cancelled' ? a.fail(t('Copy cancelled')) : a.fail(t('Copy failed: ') + e.message); }
+}
+
+// Files panel: upload into the folder that's open there
+async function uploadInto(paths, dir) {
+  let w;
+  try { w = await R.fsWalk(paths); } catch (e) { toast(t('Could not read: ') + e.message); return; }
+  const a = activity(t('⬆ Uploading {0}…', describe(w)));
+  try {
+    const r = await pushWalk(w, dir, a);
+    a.done(t('⬆ Uploaded {0} to {1}', describe(w), dir));
+    if (dir === cwd) openDir(cwd);
+    return r;
+  } catch (e) { e.message === 'cancelled' ? a.fail(t('Upload cancelled')) : a.fail(t('Upload failed: ') + e.message); }
+}
+
+// Drop on the remote screen: send, then the remote PC drops them where you released
+async function dropOnRemote(paths, x, y) {
+  let w;
+  try { w = await R.fsWalk(paths); } catch (e) { toast(t('Could not read: ') + e.message); return; }
+  const a = activity(t('⬆ Sending {0} to {1}…', describe(w), hostLabel()));
+  try {
+    const { base, roots } = await pushWalk(w, 'stage', a);
+    a.set(1, t('Dropping {0} on {1}…', describe(w), hostLabel()));
+    pendingDrop = a;
+    send({ t: 'drop-files', base, roots, x, y });
+  } catch (e) { e.message === 'cancelled' ? a.fail(t('Cancelled')) : a.fail(t('Failed: ') + e.message); }
+}
+
+$('filesBtn').onclick = () => { $('files').classList.toggle('hidden'); if (!$('files').classList.contains('hidden') && !cwd) openFirstDir(); };
+$('closeFiles').onclick = () => { $('files').classList.add('hidden'); video.focus(); };
+$('parent').onclick = () => $('parent').dataset.p && openDir($('parent').dataset.p);
+$('homeBtn').onclick = () => openDir(home || '');
+$('path').addEventListener('keydown', e => { if (e.key === 'Enter') openDir($('path').value); });
+$('upBtn').onclick = () => $('picker').click();
+$('picker').onchange = () => {
+  const paths = [...$('picker').files].map(f => R.pathForFile(f)).filter(Boolean);
+  $('picker').value = '';
+  if (paths.length && cwd) uploadInto(paths, cwd);
+};
+// drop files anywhere on the window
+let dragDepth = 0;
+addEventListener('dragenter', e => { if ([...e.dataTransfer.types].includes('Files')) { dragDepth++; $('drop').classList.remove('hidden'); e.preventDefault(); } });
+addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('drop').classList.add('hidden'); } });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', async e => {
+  e.preventDefault(); dragDepth = 0; $('drop').classList.add('hidden');
+  if (!token) return toast('Not connected');
+  const paths = [...e.dataTransfer.files].map(f => R.pathForFile(f)).filter(Boolean);
+  if (!paths.length) return toast('Drop files or folders from this PC.');
+  // onto the Files panel: into the folder shown there
+  if (!$('files').classList.contains('hidden') && $('files').contains(e.target)) {
+    if (!cwd) await openDir('');
+    uploadInto(paths, cwd);
+    return;
+  }
+  // onto the remote screen: exactly where it was released
+  const p = norm(e);
+  dropOnRemote(paths, p ? p.x : 0.5, p ? p.y : 0.5);
+});
+
+/* ---------------- start ---------------- */
+(async () => {
+  // language first (texts on the page, then everything shown later)
+  const info = await R.appInfo().catch(() => null);
+  if (info) { I18N.setLang(info.lang); I18N.translatePage(); }
+  creds = await R.creds();
+  if (!creds) { overlay('Nothing to connect to.', 'err'); return; }
+  $('who').textContent = creds.mode === 'lab' ? creds.name : (creds.name || creds.id.replace(/(\d{3})(?=\d)/g, '$1 '));
+  $('fname').textContent = creds.mode === 'lab' ? creds.pc : (creds.name || creds.id);
+  if (creds.mode === 'lab') window.__net = { server: creds.settings.server, turn: creds.settings.turn };
+  connect();
+})();
+</script>
+</body>
+</html>

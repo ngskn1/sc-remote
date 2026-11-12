@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ScreenShare – Remote desktop</title>
+<script src="i18n.js"></script>
+<style>
+  :root { --bg: #111318; --panel: #1a1d24; --line: #2a2e38; --text: #e6e8ee; --muted: #8b91a1; --accent: #5b8cff; --ok: #3ecf8e; --bad: #ff6b6b; --warn: #f5b84b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 20px 16px 40px; display: grid; gap: 18px; }
+  h1 { font-size: 18px; margin: 0; } h2 { font-size: 15px; margin: 0 0 12px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  button, input { font: inherit; color: var(--text); background: #12141a; border: 1px solid var(--line); border-radius: 6px; padding: 7px 12px; }
+  button { cursor: pointer; background: var(--panel); } button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0; }
+  label.f { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+  label.chk { display: flex; align-items: center; gap: 8px; }
+  .id { font: 600 26px/1 ui-monospace, monospace; letter-spacing: 1px; user-select: all; }
+  .muted { color: var(--muted); font-size: 12.5px; }
+  .status { display: flex; align-items: center; gap: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); } .dot.live { background: var(--accent); }
+  .msg { min-height: 20px; } .msg.bad { color: var(--bad); } .msg.ok { color: var(--ok); }
+  .warnbox { border: 1px solid var(--warn); color: var(--warn); border-radius: 8px; padding: 8px 12px; }
+  .switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600; }
+  .switch input { width: 40px; height: 22px; appearance: none; background: #2f3440; border-radius: 999px; position: relative; padding: 0; border: 0; cursor: pointer; }
+  .switch input::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+  .switch input:checked { background: var(--ok); } .switch input:checked::after { left: 21px; }
+  #saved { display: grid; gap: 8px; }
+  .pc { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .pc .n { flex: 1; } .pc .n small { color: var(--muted); font-family: ui-monospace, monospace; margin-left: 8px; }
+  .hidden { display: none !important; }
+  footer { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; color: var(--muted); font-size: 13px; padding: 0 4px; }
+  footer a { color: var(--accent); text-decoration: none; } footer a:hover { text-decoration: underline; }
+  footer select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; margin-left: 6px; }
+  input#cid { font: 600 18px ui-monospace, monospace; width: 170px; letter-spacing: 1px; }
+  /* a newer version is out (SC-Remote) */
+  .updbox { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; border: 1px solid var(--accent); background: rgba(91,140,255,.08); border-radius: 8px; padding: 10px 12px; margin: 0 0 12px; }
+  .updbox.bad { border-color: var(--bad); background: rgba(255,107,107,.08); } .updbox.ok { border-color: var(--ok); background: rgba(62,207,142,.08); }
+  .updbox span { flex: 1; min-width: 220px; }
+  .updbox.busy span::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 8px; border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">Remote desktop</h1>
+
+  <section id="hostSec">
+    <h2>This computer</h2>
+    <label class="switch"><input type="checkbox" id="enabled"> Allow remote control of this PC</label>
+    <div class="row">
+      <div><div class="muted">ID</div><div class="id" id="myid">…</div></div>
+      <button id="copyId">Copy</button>
+      <button id="newId" title="Make a new ID (computers saved with the old one stop working)">New ID</button>
+      <span class="status" style="margin-left:auto"><span class="dot" id="hdot"></span><span id="hstatus">Off</span></span>
+    </div>
+    <div class="row">
+      <label class="f">Password <input type="password" id="newpw" placeholder="at least 6 characters" autocomplete="new-password"></label>
+      <button id="setpw">Set password</button>
+      <span class="muted" id="pwstate"></span>
+    </div>
+    <div class="row">
+      <label class="chk"><input type="checkbox" id="autostart"> Start with the computer (in the background)</label>
+      <label class="chk"><input type="checkbox" id="awake"> Keep this PC awake while remote access is on</label>
+    </div>
+    <div id="wayland" class="warnbox hidden">This is a Wayland session. Remote control needs the X11 session: log out, pick <b>Cinnamon</b> (not "Cinnamon on Wayland") on the login screen, and log back in.</div>
+    <div class="msg" id="hmsg"></div>
+    <div class="muted">With remote access on, ScreenShare keeps running in the tray after you close its windows. Anyone with the ID <b>and</b> password can control this PC.</div>
+  </section>
+
+  <section id="svcSec" class="hidden">
+    <h2>This computer</h2>
+    <div id="upd" class="updbox hidden"><span id="updText"></span><button id="updBtn" class="primary hidden"></button></div>
+    <div class="row">
+      <div><div class="muted">ID</div><div class="id" id="sid">—</div></div>
+      <button id="scopy">Copy</button>
+      <span class="status" style="margin-left:auto"><span class="dot" id="sdot"></span><span id="sstatus">…</span></span>
+    </div>
+    <div class="muted" id="snote"></div>
+    <div class="row"><button id="sconf" class="primary">Change password or settings…</button><span class="muted">Windows asks for administrator permission.</span></div>
+    <div class="msg" id="smsg"></div>
+  </section>
+
+  <section>
+    <h2>Connect to a PC</h2>
+    <div class="row">
+      <label class="f">ID <input id="cid" placeholder="123 456 789" inputmode="numeric" maxlength="11"></label>
+      <label class="f">Password <input type="password" id="cpw" autocomplete="off"></label>
+      <label class="f">Name (optional) <input id="cname" placeholder="e.g. Home PC" maxlength="40"></label>
+    </div>
+    <div class="row">
+      <label class="chk"><input type="checkbox" id="remember" checked> Remember this PC (password stored encrypted on this computer)</label>
+      <button id="connect" class="primary" style="margin-left:auto">Connect</button>
+    </div>
+    <div class="msg" id="cmsg"></div>
+    <div id="saved"></div>
+  </section>
+
+  <footer>
+    <a href="#" id="feedback" class="hidden">Report a problem or send feedback</a>
+    <span id="ver" class="hidden"></span>
+    <label id="langBox" class="hidden"><span>Language</span><select id="lang"><option value="pt">Português (Brasil)</option><option value="en">English</option></select></label>
+  </footer>
+</main>
+
+<script>
+'use strict';
+const R = window.remoteApp;
+const $ = id => document.getElementById(id);
+const fmtId = id => String(id).replace(/(\d{3})(?=\d)/g, '$1 ');
+const msg = (el, text, cls = '') => { $(el).textContent = text; $(el).className = 'msg ' + cls; };
+const err = e => String(e && e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+
+function render(s) {
+  $('myid').textContent = fmtId(s.id);
+  $('enabled').checked = s.enabled;
+  $('autostart').checked = s.autostart;
+  $('awake').checked = s.keepAwake;
+  $('pwstate').textContent = s.hasPassword ? t('A password is set. Setting a new one disconnects anyone connected.') : t('No password yet: set one to turn remote access on.');
+  $('wayland').classList.toggle('hidden', !s.wayland);
+  const st = s.enabled ? s.status : { state: 'off' };
+  const map = { off: [t('Off'), ''], starting: [t('Connecting to the internet…'), 'warn'], online: [t('Online, waiting for connections'), 'ok'],
+                connected: [t('Being controlled from {0}', st.peer || t('another PC')), 'live'], error: [t('Problem: {0}', st.message || t('offline')), 'bad'] };
+  const [text, cls] = map[st.state] || map.off;
+  $('hstatus').textContent = text; $('hdot').className = 'dot ' + cls;
+}
+async function refresh() { render(await R.state()); }
+R.onState(render);
+
+$('enabled').onchange = async () => {
+  try { render(await R.setEnabled($('enabled').checked)); msg('hmsg', t($('enabled').checked ? 'Remote access is on.' : 'Remote access is off.'), 'ok'); }
+  catch (e) { $('enabled').checked = false; msg('hmsg', t(err(e)), 'bad'); }
+};
+$('setpw').onclick = async () => {
+  try { render(await R.setPassword($('newpw').value)); $('newpw').value = ''; msg('hmsg', t('Password saved.'), 'ok'); }
+  catch (e) { msg('hmsg', t(err(e)), 'bad'); }
+};
+$('newpw').addEventListener('keydown', e => { if (e.key === 'Enter') $('setpw').click(); });
+$('autostart').onchange = async () => {
+  try { render(await R.setAutostart($('autostart').checked)); msg('hmsg', $('autostart').checked ? t('{0} will start with the computer.', product) : t('Won\'t start with the computer.'), 'ok'); }
+  catch (e) { msg('hmsg', t(err(e)), 'bad'); refresh(); }
+};
+$('awake').onchange = async () => render(await R.setKeepAwake($('awake').checked));
+$('copyId').onclick = async () => { const s = await R.state(); navigator.clipboard.writeText(s.id); msg('hmsg', t('ID copied.'), 'ok'); };
+$('newId').onclick = async () => { render(await R.newId()); msg('hmsg', t('New ID created.'), 'ok'); };
+
+async function renderSaved() {
+  const list = await R.saved();
+  $('saved').replaceChildren(...list.map(pc => {
+    const row = document.createElement('div'); row.className = 'pc';
+    const n = document.createElement('span'); n.className = 'n';
+    const b = document.createElement('b'); b.textContent = pc.name; const sm = document.createElement('small'); sm.textContent = fmtId(pc.id);
+    n.append(b, sm);
+    const go = document.createElement('button'); go.className = 'primary'; go.textContent = t('Connect');
+    go.onclick = () => connect({ id: pc.id, name: pc.name });
+    const del = document.createElement('button'); del.textContent = t('Forget');
+    del.onclick = async () => { await R.forget(pc.id); renderSaved(); };
+    row.append(n, go, del);
+    return row;
+  }));
+}
+async function connect(opts) {
+  try { await R.connect(opts); msg('cmsg', t('Opening a window for {0}…', opts.name || fmtId(opts.id)) + (opts.remember ? t(' It is saved once the password works.') : ''), 'ok'); }
+  catch (e) { msg('cmsg', t(err(e)), 'bad'); }
+}
+$('connect').onclick = () => connect({ id: $('cid').value, password: $('cpw').value, name: $('cname').value.trim(), remember: $('remember').checked })
+  .then(() => { $('cpw').value = ''; });
+for (const id of ['cid', 'cpw', 'cname']) $(id).addEventListener('keydown', e => { if (e.key === 'Enter') $('connect').click(); });
+$('cid').addEventListener('input', () => { const d = $('cid').value.replace(/\D/g, '').slice(0, 9); $('cid').value = fmtId(d); });
+
+/* ---- remote edition on Windows: the service runs this PC's remote access (from startup, also at sign-in) ---- */
+let svc = null;
+function renderService(info) {
+  const st = info.status || {};
+  const on = st.enabled !== false && st.state && st.state !== 'off';
+  $('sid').textContent = st.id ? fmtId(st.id) : '—';
+  $('scopy').disabled = !st.id;
+  const map = { starting: [t('Starting…'), 'warn'], online: [t('Online, waiting for connections'), 'ok'],
+                connected: [t('Being controlled from {0}', st.peer || t('another PC')), 'live'], error: [t('Problem: {0}', st.message || t('offline')), 'bad'] };
+  const [text, cls] = on ? (map[st.state] || map.starting) : [t('Remote access to this PC is off'), ''];
+  $('sstatus').textContent = text; $('sdot').className = 'dot ' + cls;
+  $('snote').textContent = on ? t('Others connect with this ID and the password set for this PC. It works from startup, also at the sign-in screen, as long as the PC is on and online.')
+                              : t('Others can\'t connect to this PC. You can still connect to other PCs below.');
+  $('sconf').textContent = st.id || on ? t('Change password or settings…') : t('Set up remote access…');
+}
+async function refreshService() { svc = await R.serviceInfo(); if (svc) renderService(svc); }
+$('scopy').onclick = () => { if (svc && svc.status && svc.status.id) { navigator.clipboard.writeText(svc.status.id); msg('smsg', t('ID copied.'), 'ok'); } };
+$('sconf').onclick = async () => {
+  $('sconf').disabled = true; msg('smsg', t('Opening the settings…'));
+  try { await R.serviceConfigure(); msg('smsg', t('Saved. Changes apply within a few seconds.'), 'ok'); }
+  catch (e) { msg('smsg', err(e) === 'Cancelled' ? '' : t(err(e)), err(e) === 'Cancelled' ? '' : 'bad'); }
+  $('sconf').disabled = false;
+  for (const t of [1500, 4000, 8000]) setTimeout(refreshService, t);
+};
+
+/* ---- updates (SC-Remote): a notice here when a newer version is out ---- */
+function renderUpdate(u) {
+  if (!u) return;
+  let text = '', cls = '', label = '';
+  if (u.state === 'available') { text = t('A new version of {0} is available: {1}.', product, u.version); label = t('Restart and update'); }
+  else if (u.state === 'installing') { cls = 'busy'; text = u.step === 'installing' ? t('Installing version {0}… {1} closes and reopens by itself.', u.version, product) : t('Downloading version {0}…', u.version); }
+  else if (u.state === 'failed') { cls = 'bad'; text = t('The update failed: {0}', t(u.error || 'unknown error')); label = u.version ? t('Try again') : ''; }
+  else if (u.state === 'updated') { cls = 'ok'; text = t('{0} was updated to version {1}.', product, u.current); }
+  $('upd').className = 'updbox ' + cls + (text ? '' : ' hidden');
+  $('updText').textContent = text;
+  $('updBtn').textContent = label; $('updBtn').classList.toggle('hidden', !label); $('updBtn').disabled = false;
+}
+$('updBtn').onclick = async () => { $('updBtn').disabled = true; renderUpdate(await R.updateInstall()); };
+R.onUpdate(renderUpdate);
+
+R.onSavedChanged(renderSaved);           // a password worked: the PC was saved (or its password updated)
+let product = 'ScreenShare';
+(async () => {
+  // language first, so every text below comes out in it
+  const info = await R.appInfo();
+  product = info.product;
+  I18N.setLang(info.lang);
+  I18N.translatePage();
+  if (info.chooseLang) {                  // SC-Remote: its own name, a language choice, the group's feedback form
+    $('title').textContent = info.product; document.title = info.product;
+    $('langBox').classList.remove('hidden'); $('lang').value = info.lang;
+    $('lang').onchange = async () => { await R.setLang($('lang').value); location.reload(); };
+    $('ver').textContent = `${info.product} ${info.version}`; $('ver').classList.remove('hidden');
+  }
+  if (info.feedback) { $('feedback').classList.remove('hidden'); $('feedback').onclick = e => { e.preventDefault(); R.openFeedback(); }; }
+  svc = await R.serviceInfo();
+  if (svc) {
+    $('hostSec').classList.add('hidden'); $('svcSec').classList.remove('hidden');
+    renderService(svc);
+    setInterval(refreshService, 5000);
+  } else {
+    $('hostSec').insertBefore($('upd'), $('hostSec').children[1]);   // (no service: the notice goes in this section)
+    refresh();
+    setInterval(refresh, 5000);
+  }
+  renderSaved();
+  renderUpdate(await R.updateInfo());
+})();
+</script>
+</body>
+</html>

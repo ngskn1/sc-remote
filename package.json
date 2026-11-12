@@ -1,0 +1,46 @@
+{
+  "name": "screenshare",
+  "productName": "ScreenShare",
+  "version": "2.3.1",
+  "description": "P2P screen sharing with per-app game audio",
+  "main": "main.js",
+  "license": "MIT",
+  "scripts": {
+    "assets": "node scripts/copy-assets.js",
+    "start": "npm run assets && electron .",
+    "windows-bin": "node scripts/build-windows-bin.js",
+    "dist": "npm run assets && electron-builder --win portable --linux AppImage",
+    "dist:remote": "npm run assets && npm run windows-bin && electron-builder --config build/remote.config.js --win nsis",
+    "dist:lab": "npm run assets && npm run windows-bin && electron-builder --config build/lab.config.js --win nsis --linux AppImage",
+    "release:remote": "node scripts/release-remote.js"
+  },
+  "dependencies": {
+    "loopback-capture": "3.0.2"
+  },
+  "devDependencies": {
+    "electron": "44.8.0",
+    "electron-builder": "26.15.3",
+    "peerjs": "1.5.5"
+  },
+  "build": {
+    "appId": "local.screenshare",
+    "productName": "ScreenShare",
+    "files": [
+      "main.js", "preload.js", "audio-linux.js", "audio-windows.js", "app/**/*", "package.json",
+      "remote-preload.js", "remote/**/*"
+    ],
+    "win": {
+      "target": [{ "target": "portable", "arch": ["x64"] }],
+      "signAndEditExecutable": false
+    },
+    "portable": { "artifactName": "ScreenShare-${version}-portable.exe" },
+    "linux": {
+      "target": [{ "target": "AppImage", "arch": ["x64"] }],
+      "category": "Network",
+      "icon": "build/icon.png"
+    },
+    "appImage": { "artifactName": "ScreenShare-${version}.AppImage" },
+    "publish": null,
+    "npmRebuild": false
+  }
+}

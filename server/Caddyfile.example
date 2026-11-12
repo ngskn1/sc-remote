@@ -1,0 +1,5 @@
+# HTTPS in front of the connection server (Caddy gets the certificate by itself).
+# Run the server with PROXIED=1, then in the lab rules: host = peer.example.org, port = 443, path = /, HTTPS on.
+peer.example.org {
+	reverse_proxy 127.0.0.1:9000
+}

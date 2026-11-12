@@ -1,0 +1,1122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111318">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest"><!-- used when hosted (installable on Android); harmless otherwise -->
+<link rel="icon" href="icon-192.png">
+<title>Screen Share</title>
+<!--
+  Simple P2P screen/app sharing (video only, use Discord for voice).
+  Works in Chrome/Edge/Firefox on Windows and Linux. Open this file in a browser.
+  Signaling: free PeerJS cloud broker. Video goes directly between computers (WebRTC).
+  Optional: ?server=host:port to use your own PeerJS server (npx peer --port 9000).
+-->
+<script src="peerjs.min.js"></script><!-- bundled in the desktop app; in a browser the CDN below is used -->
+<script>window.Peer || document.write('<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js"><\/script>')</script>
+<script>window.Peer || document.write('<script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"><\/script>')</script>
+<style>
+  :root {
+    --bg: #111318; --panel: #1a1d24; --line: #2a2e38; --text: #e6e8ee; --muted: #8b91a1;
+    --accent: #5b8cff; --ok: #3ecf8e; --bad: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .tabs { margin-left: auto; display: flex; gap: 4px; }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  .tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button, select, input { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 7px 12px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 12px; }
+  label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+  label.check { flex-direction: row; align-items: center; gap: 6px; font-size: 14px; color: var(--text); }
+  .code { font: 600 22px/1 ui-monospace, monospace; letter-spacing: 2px; padding: 8px 14px; background: var(--panel); border: 1px dashed var(--accent); border-radius: 6px; user-select: all; }
+  .stage { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; }
+  .stage video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+  .stage .empty { position: absolute; color: var(--muted); }
+  .stats { position: absolute; top: 8px; left: 8px; font: 12px/1.3 ui-monospace, monospace; background: rgba(0,0,0,.6); padding: 4px 8px; border-radius: 4px; pointer-events: none; white-space: pre; }
+  .status { color: var(--muted); margin: 8px 0; min-height: 20px; }
+  .status.ok { color: var(--ok); } .status.bad { color: var(--bad); }
+  .hidden { display: none !important; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 12px; }
+  .viewerbar { position: absolute; bottom: 0; left: 0; right: 0; display: flex; gap: 8px; align-items: center; padding: 8px; background: linear-gradient(transparent, rgba(0,0,0,.7)); opacity: 0; transition: opacity .2s; }
+  .stage:hover .viewerbar, .stage.ui .viewerbar { opacity: 1; }
+  .stage:fullscreen { aspect-ratio: auto; width: 100vw; height: 100vh; border-radius: 0; }
+  .unmute { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 18px; padding: 14px 22px;
+            background: rgba(0,0,0,.75); border: 1px solid var(--accent); border-radius: 999px; z-index: 2; }
+  @media (hover: none) {                 /* phones/tablets: tap the video to show controls */
+    .viewerbar { padding: 12px; gap: 12px; }
+    .viewerbar button { padding: 10px 16px; }
+    #vol { display: none; }              /* use the phone's volume buttons */
+  }
+  @media (max-width: 700px) {
+    header { padding: 10px 12px; }
+    header h1 { font-size: 15px; }
+    main { padding: 12px; }
+    .row { gap: 8px; }
+    .row label { flex: 1 1 140px; }
+    .row label input:not([type=checkbox]) { width: 100% !important; }
+    #view { display: flex; flex-direction: column; }
+    #friends { order: -1; }              /* saved friends first: one tap to watch */
+    #friends .chip { flex: 1 1 auto; }
+    #friends .chip .go { flex: 1; text-align: left; }
+    .row label.check { flex-basis: 100%; }
+    .stage { border-radius: 6px; margin: 0 -12px; }
+    .chip .go { padding: 9px 14px; }
+  }
+  .viewerbar input[type=range] { width: 100px; padding: 0; }
+  input.code { width: 9.5em; font-size: 18px; padding: 6px 10px; text-transform: uppercase; }
+  input.code[readonly] { opacity: .85; }
+  .codewrap { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .friends:empty { display: none; }
+  .chip { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .chip.on { border-color: var(--ok); }
+  .chip button { border: 0; border-radius: 0; }
+  .chip .go small { color: var(--muted); margin-left: 8px; font-family: ui-monospace, monospace; }
+  .chip .del { color: var(--muted); padding: 7px 10px; }
+  .app-only { display: none; } body.is-app .app-only { display: revert; } body.is-app .browser-only { display: none; }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: flex; align-items: center; justify-content: center; z-index: 10; padding: 16px; }
+  .modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; width: min(960px, 100%); max-height: 90vh; overflow: auto; padding: 16px; }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .modal h3 { margin: 12px 0 8px; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+  .src { background: var(--bg); border: 2px solid var(--line); border-radius: 8px; padding: 6px; cursor: pointer; text-align: left; }
+  .src:hover, .src:focus { border-color: var(--accent); }
+  .src img { width: 100%; aspect-ratio: 16/9; object-fit: contain; background: #000; border-radius: 4px; display: block; }
+  .linux-only { display: none; } body.is-linux .linux-only { display: inline; }
+  .src span { display: block; margin-top: 6px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Screen Share</h1>
+  <div class="tabs">
+    <button id="tabHost" class="on">Share my screen</button>
+    <button id="tabView">Watch a friend</button>
+    <button id="tabRemote" class="app-only" title="Control your other computers, or let them control this one">Remote desktop</button>
+  </div>
+</header>
+
+<main>
+  <!-- HOST -->
+  <section id="host">
+    <div class="row">
+      <label>Resolution
+        <select id="res">
+          <option value="1280x720">720p</option>
+          <option value="1920x1080" selected>1080p</option>
+          <option value="2560x1440">1440p</option>
+          <option value="native">Native</option>
+        </select>
+      </label>
+      <label>Frame rate
+        <select id="fps">
+          <option>30</option>
+          <option selected>60</option>
+        </select>
+      </label>
+      <label>Bitrate
+        <select id="bitrate">
+          <option value="2500">2.5 Mbps</option>
+          <option value="4000">4 Mbps</option>
+          <option value="6000" selected>6 Mbps</option>
+          <option value="8000">8 Mbps</option>
+          <option value="12000">12 Mbps</option>
+          <option value="20000">20 Mbps</option>
+        </select>
+      </label>
+      <label>Codec
+        <select id="codec">
+          <option value="H264" selected>H.264</option>
+          <option value="VP9">VP9</option>
+          <option value="AV1">AV1</option>
+          <option value="VP8">VP8</option>
+          <option value="auto">Browser default</option>
+        </select>
+      </label>
+      <label class="app-only" title="Which chip compresses the video. Applies after a restart.">Encoder
+        <select id="encoder">
+          <option value="hardware">GPU (hardware)</option>
+          <option value="software">CPU (software)</option>
+        </select>
+      </label>
+      <label>Optimize for
+        <select id="hint">
+          <option value="motion" selected>Games (smooth)</option>
+          <option value="detail">Text / code (sharp)</option>
+        </select>
+      </label>
+      <label>Audio
+        <select id="audioSrc">
+          <optgroup id="ogApp" label="Per-app audio"></optgroup>
+          <option value="screen" class="browser-only" selected>From screen share (Chrome/Edge)</option>
+          <option value="none">No audio</option>
+          <optgroup id="ogDev" label="Audio devices"></optgroup>
+        </select>
+      </label>
+      <button id="refreshApps" class="app-only" title="Re-list running apps">↻ Apps</button>
+      <button id="scanAudio" title="Lists your audio devices so you can capture system audio directly">Find audio devices</button>
+    </div>
+    <div class="row">
+      <button id="start" class="primary">Start sharing</button>
+      <button id="restartApp" class="hidden" title="Restart the app to switch encoder. Friends rejoin automatically.">Restart to apply</button>
+      <button id="switchSource" class="hidden" title="Share a different window or screen without stopping">Change window</button>
+      <button id="stop" class="danger hidden">Stop</button>
+      <span class="codewrap">Your room code
+        <input id="code" class="code" maxlength="16" spellcheck="false" autocomplete="off" title="Stays the same every time, so friends can save it. You can type your own.">
+        <button id="newCode" title="Make a new random code">New</button><button id="copy">Copy</button><button id="copyLink" class="hidden" title="A link friends can open on any phone or PC to watch">Copy watch link</button></span>
+      <span id="viewers" class="status"></span>
+    </div>
+    <div id="hostStatus" class="status"></div>
+    <div class="stage">
+      <video id="preview" muted playsinline autoplay></video>
+      <div class="empty" id="previewEmpty">Your preview appears here</div>
+      <div class="stats hidden" id="hostStats"></div>
+    </div>
+    <p class="hint app-only">Every setting, including audio and codec, applies live; <b>Change window</b> switches what you share without stopping. Your room code stays the same every time, so friends can save it (anyone with the code can watch while you're live).<br>
+      <b>Audio:</b> "Everything except Discord" sends your game (and anything else playing) without the voice call.
+      To send a single app instead, start it, click <b>↻ Apps</b> and pick it<span class="linux-only"> (on Linux an app only appears once it is playing sound)</span>.</p>
+    <p class="hint browser-only">Every setting, including audio and codec, applies live; <b>Change window</b> switches what you share without stopping. Your room code stays the same every time, so friends can save it (anyone with the code can watch while you're live).<br>
+      <b>Game audio without Discord echo:</b> give the game its own audio output, then click <b>Find audio devices</b>; the app picks it automatically (★).
+      Linux: run <code>game-audio-linux.sh on</code> and capture <i>"ScreenShare-Game"</i>. Windows: install VB-CABLE, set the game's output to <i>CABLE Input</i>
+      and capture <i>"CABLE Output"</i>. See the README.<br>
+      "From screen share" (Chrome/Edge on Windows only) and devices like <i>Stereo Mix</i> or <i>"Monitor of &lt;your speakers&gt;"</i> capture <b>everything</b>, so your friends would hear Discord voices back.
+      If the browser offers a "share window audio" option when you pick a window, that one is app-only.</p>
+  </section>
+
+  <!-- VIEWER -->
+  <section id="view" class="hidden">
+    <div class="row">
+      <label>Room code <input id="joinCode" placeholder="ABC123" maxlength="16" spellcheck="false" style="text-transform:uppercase;width:160px"></label>
+      <button id="join" class="primary">Watch</button>
+      <button id="leave" class="hidden">Leave</button>
+      <label>Save as <input id="friendName" placeholder="Friend's name" maxlength="24" style="width:150px"></label>
+      <button id="saveFriend" title="Save this code as a one-click button">Save</button>
+      <label class="check" title="If they're not live yet, or stop and start again, keep waiting and rejoin automatically"><input type="checkbox" id="autoRetry" checked> Wait for host &amp; auto-rejoin</label>
+    </div>
+    <div id="friends" class="row friends"></div>
+    <div id="viewStatus" class="status"></div>
+    <div class="stage" id="viewStage">
+      <video id="remote" playsinline autoplay></video>
+      <div class="empty" id="remoteEmpty">Enter your friend's room code</div>
+      <div class="stats hidden" id="viewStats"></div>
+      <button id="unmute" class="unmute hidden">🔇 Tap for sound</button>
+      <div class="viewerbar">
+        <button id="fs">Fullscreen</button>
+        <button id="mute">Mute</button>
+        <input type="range" id="vol" min="0" max="1" step="0.05" value="1">
+        <label class="check" style="margin-left:auto"><input type="checkbox" id="showStats" checked> Stats</label>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="picker" class="modal hidden" role="dialog" aria-label="Choose what to share">
+  <div class="modal-box">
+    <div class="modal-head"><b>Choose what to share</b><button id="pickCancel">Cancel</button></div>
+    <h3>Screens</h3><div class="grid" id="pickScreens"></div>
+    <h3>Windows</h3><div class="grid" id="pickWindows"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const PREFIX = 'scrshare-';                 // namespace on the public broker
+const params = new URLSearchParams(location.search);
+
+function peerOptions() {
+  const opts = {
+    debug: 1,
+    config: { iceServers: [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
+      { urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'], username: 'peerjs', credential: 'peerjsp' },
+    ]},
+  };
+  const s = params.get('server');            // e.g. ?server=localhost:9000 for a self-hosted PeerJS server
+  if (s) { const [host, port] = s.split(':'); Object.assign(opts, { host, port: +port || 9000, path: '/', secure: false }); }
+  return opts;
+}
+
+function setStatus(el, text, cls = '') { el.textContent = text; el.className = 'status ' + cls; }
+function randomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  return Array.from(crypto.getRandomValues(new Uint8Array(6)), b => chars[b % chars.length]).join('');
+}
+
+/* ---------- SDP tweaks: preferred codec + Chrome start bitrate ---------- */
+// The host's choice travels to viewers as call metadata, because the viewer's answer
+// is what finally picks the codec and carries the bitrate hints the sender obeys.
+function sdpTransform(sdp, codec, kbps) {
+  let lines = sdp.split('\r\n');
+  // Opus: stereo + 128 kbps (WebRTC defaults to mono voice quality)
+  lines = lines.map(l => /^a=fmtp:\d+ .*useinbandfec/.test(l) && !l.includes('stereo=')
+    ? l + ';stereo=1;sprop-stereo=1;maxaveragebitrate=128000;usedtx=0' : l);
+  const mIdx = lines.findIndex(l => l.startsWith('m=video'));
+  if (mIdx < 0) return sdp;
+  let end = lines.findIndex((l, i) => i > mIdx && l.startsWith('m='));
+  if (end < 0) end = lines.length;
+  const section = lines.slice(mIdx, end);
+  // map payload type -> codec name
+  const pt2name = {};
+  section.forEach(l => { const m = l.match(/^a=rtpmap:(\d+) ([\w-]+)\//); if (m) pt2name[m[1]] = m[2].toUpperCase(); });
+  const mParts = lines[mIdx].split(' ');
+  let pts = mParts.slice(3);
+  if (codec !== 'auto') {
+    const want = pts.filter(p => pt2name[p] === codec);
+    if (want.length) pts = [...want, ...pts.filter(p => !want.includes(p))];
+    lines[mIdx] = [...mParts.slice(0, 3), ...pts].join(' ');
+  }
+  // start/min bitrate hints (Chrome otherwise starts low and ramps up slowly)
+  const startK = Math.round(kbps * 0.7), minK = Math.round(Math.min(1000, kbps * 0.25));
+  // VP8 normally has no fmtp line; add one so it gets the hints too
+  for (const [pt, name] of Object.entries(pt2name)) {
+    if (name === 'VP8' && !lines.slice(mIdx, end).some(l => l.startsWith(`a=fmtp:${pt} `))) {
+      const at = lines.findIndex((l, i) => i > mIdx && i < end && l.startsWith(`a=rtpmap:${pt} `));
+      lines.splice(at + 1, 0, `a=fmtp:${pt} x-google-start-bitrate=${startK};x-google-min-bitrate=${minK}`);
+      end++;
+    }
+  }
+  for (let i = mIdx; i < end; i++) {
+    const m = lines[i].match(/^a=fmtp:(\d+) (.*)$/);
+    if (m && ['H264', 'VP8', 'VP9', 'AV1'].includes(pt2name[m[1]]) && !m[2].includes('x-google-')) {
+      lines[i] += `;x-google-start-bitrate=${startK};x-google-min-bitrate=${minK}`;
+    }
+  }
+  return lines.join('\r\n');
+}
+
+/* =========================== HOST =========================== */
+const isFirefox = /firefox/i.test(navigator.userAgent);
+const RAW_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+if (isFirefox) {
+  $('audioSrc').options[0].textContent = 'From screen share (not in Firefox)';
+}
+
+async function scanAudioDevices() {
+  try {   // device names stay hidden until the page has had audio permission once
+    const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+    tmp.getTracks().forEach(t => t.stop());
+  } catch (e) { setStatus($('hostStatus'), 'Audio permission denied: ' + e.message, 'bad'); return; }
+  const sel = $('audioSrc');
+  $('ogDev').replaceChildren();
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
+  // game-only devices (no Discord in them) beat whole-system ones
+  const GAME_ONLY = /screenshare-game|cable output|vb-audio/i;
+  let best = null, whole = null;
+  for (const d of devs) {
+    const o = new Option(d.label || 'Audio device', d.deviceId);
+    $('ogDev').appendChild(o);
+    if (!best && GAME_ONLY.test(d.label)) best = o;
+    if (!whole && isWholeSystem(d.label)) whole = o;
+  }
+  if (APP && $('audioSrc').value.startsWith('native:')) {
+    setStatus($('hostStatus'), `Found ${devs.length} devices (listed under "Audio devices"). Per-app audio is still selected.`, 'ok');
+  } else if (best) {
+    const name = best.textContent;
+    best.textContent = '★ ' + name; sel.value = best.value;
+    setStatus($('hostStatus'), `Selected "${name}". Make sure the game outputs to it and Discord doesn't.`, 'ok');
+  } else if (whole) {
+    sel.value = whole.value;
+    setStatus($('hostStatus'), `No game-only device found, so selected "${whole.label}". It captures ALL sound, including Discord voices (your friends will hear echo). See the README to set up a game-only device.`, 'bad');
+  } else {
+    setStatus($('hostStatus'), `Found ${devs.length} devices but none that captures PC sound. See the README audio section.`, 'bad');
+  }
+}
+function isWholeSystem(label) { return /monitor|stereo mix|mixagem|what u hear/i.test(label || '') && !/screenshare-game/i.test(label || ''); }
+$('audioSrc').addEventListener('change', () => {
+  const o = $('audioSrc').selectedOptions[0];
+  if (isWholeSystem(o.label)) setStatus($('hostStatus'), `"${o.label}" captures all sound, including Discord voices.`, 'bad');
+  else if (o.value === 'native:system') setStatus($('hostStatus'), 'This captures all sound, including Discord voices. "Everything except Discord" avoids the echo.', 'bad');
+  else if (o.value === 'screen') setStatus($('hostStatus'), 'Screen-share audio: sharing a whole screen includes Discord voices; a window or tab only includes its own sound.', '');
+});
+$('scanAudio').onclick = scanAudioDevices;
+
+/* ---------- desktop app: per-app audio ---------- */
+const APP = window.screenshareApp || null;
+const cleanErr = e => String(e && e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+let audioCtx = null, nativeAudioLabel = '';
+
+async function refreshApps() {
+  if (!APP) return;
+  const prev = $('audioSrc').value;
+  let list = [];
+  try { list = await APP.listAudio(); }
+  catch (e) { setStatus($('hostStatus'), 'Per-app audio unavailable: ' + cleanErr(e), 'bad'); }
+  $('ogApp').replaceChildren(...list.map(a => new Option((a.recommended ? '★ ' : '') + a.label, 'native:' + a.id)));
+  const want = savedSettings().audioSrc;
+  const values = [...$('audioSrc').options].map(o => o.value);
+  $('audioSrc').value = values.includes(prev) && prev !== 'screen' ? prev
+    : values.includes(want) ? want
+    : list.length ? 'native:' + (list.find(a => a.recommended) || list[0]).id : 'none';
+}
+
+// Windows: raw PCM from the native capture → AudioWorklet → MediaStream track.
+const PCM_WORKLET = `
+class PcmPlayer extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.q = []; this.off = 0; this.frames = 0; this.playing = false;
+    this.port.onmessage = e => {
+      const src = e.data && e.data.port;
+      if (src) { src.onmessage = m => this.push(m.data); src.start && src.start(); }
+    };
+  }
+  push(data) {
+    const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+    const s16 = new Int16Array(u8.slice().buffer);          // copy: the view may be unaligned
+    this.q.push(s16); this.frames += s16.length / 2;
+    while (this.frames > 7200 && this.q.length > 1) {       // >150 ms behind: drop to stay live
+      const d = this.q.shift(); this.frames -= (d.length - this.off) / 2; this.off = 0;
+    }
+  }
+  process(_in, outputs) {
+    const L = outputs[0][0], R = outputs[0][1] || L;
+    if (!this.playing) { if (this.frames < 1920) return true; this.playing = true; }   // prebuffer 40 ms
+    for (let i = 0; i < L.length; i++) {
+      if (!this.q.length) { this.playing = false; break; }
+      const c = this.q[0];
+      L[i] = c[this.off] / 32768; R[i] = c[this.off + 1] / 32768;
+      this.off += 2; this.frames--;
+      if (this.off >= c.length) { this.q.shift(); this.off = 0; }
+    }
+    return true;
+  }
+}
+registerProcessor('pcm-player', PcmPlayer);`;
+
+function nextAudioPort() {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => { window.removeEventListener('message', on); reject(new Error('audio channel did not open')); }, 5000);
+    function on(e) {
+      if (e.data !== 'screenshare-audio-port' || !e.ports[0]) return;
+      clearTimeout(t); window.removeEventListener('message', on); resolve(e.ports[0]);
+    }
+    window.addEventListener('message', on);
+  });
+}
+
+async function pcmTrack(port) {
+  audioCtx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+  const url = URL.createObjectURL(new Blob([PCM_WORKLET], { type: 'text/javascript' }));
+  await audioCtx.audioWorklet.addModule(url);
+  URL.revokeObjectURL(url);
+  const node = new AudioWorkletNode(audioCtx, 'pcm-player', { numberOfInputs: 0, outputChannelCount: [2] });
+  node.port.postMessage({ port }, [port]);
+  const dest = audioCtx.createMediaStreamDestination();
+  dest.channelCount = 2;
+  node.connect(dest);
+  await audioCtx.resume();
+  return dest.stream.getAudioTracks()[0];
+}
+
+// Linux: the app routed the audio into a virtual output; capture its monitor like a microphone.
+async function deviceTrack(match) {
+  try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach(t => t.stop()); } catch {}
+  for (let i = 0; i < 10; i++) {             // the new device can take a moment to appear
+    const dev = (await navigator.mediaDevices.enumerateDevices())
+      .find(d => d.kind === 'audioinput' && d.label.includes(match) && /monitor/i.test(d.label));
+    if (dev) {
+      const a = await navigator.mediaDevices.getUserMedia({ audio: { ...RAW_AUDIO, deviceId: { exact: dev.deviceId }, channelCount: 2 } });
+      return a.getAudioTracks()[0];
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  throw new Error(`"Monitor of ${match}" did not show up as an audio device`);
+}
+
+async function startNativeAudio(id) {
+  const portP = nextAudioPort();
+  portP.catch(() => {});
+  const r = await APP.startAudio(id);
+  const track = r.type === 'pcm' ? await pcmTrack(await portP) : await deviceTrack(r.match);
+  return { track, note: r.note || '' };
+}
+
+function stopNativeAudio() {
+  if (!APP) return;
+  APP.stopAudio().catch(() => {});
+  if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+}
+
+if (APP) {
+  document.body.classList.add('is-app');
+  document.body.classList.toggle('is-linux', APP.platform === 'linux');
+  $('refreshApps').onclick = refreshApps;
+  // in-app screen/window picker (replaces the browser's dialog)
+  APP.onPickSource(sources => {
+    const card = s => {
+      const b = document.createElement('button');
+      b.className = 'src';
+      const img = new Image(); img.src = s.thumb; img.alt = '';
+      const span = document.createElement('span'); span.textContent = s.name; span.title = s.name;
+      b.append(img, span);
+      b.onclick = () => { $('picker').classList.add('hidden'); APP.pickSource(s.id); };
+      return b;
+    };
+    $('pickScreens').replaceChildren(...sources.filter(s => s.screen).map(card));
+    $('pickWindows').replaceChildren(...sources.filter(s => !s.screen).map(card));
+    $('picker').classList.remove('hidden');
+  });
+  const cancelPick = () => { $('picker').classList.add('hidden'); APP.pickSource(null); };
+  $('pickCancel').onclick = cancelPick;
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('picker').classList.contains('hidden')) cancelPick(); });
+}
+
+/* ---------- remember settings ---------- */
+const SETTINGS = ['res', 'fps', 'bitrate', 'codec', 'hint', 'audioSrc'];
+function savedSettings() { try { return JSON.parse(localStorage.getItem('screenshare-settings')) || {}; } catch { return {}; } }
+function saveSettings() {
+  const o = {}; SETTINGS.forEach(id => o[id] = $(id).value);
+  try { localStorage.setItem('screenshare-settings', JSON.stringify(o)); } catch {}
+}
+(function restoreSettings() {
+  const o = savedSettings();
+  for (const id of SETTINGS) {
+    if (o[id] != null && [...$(id).options].some(opt => opt.value === o[id])) $(id).value = o[id];
+  }
+  SETTINGS.forEach(id => $(id).addEventListener('change', saveSettings));
+})();
+if (APP) refreshApps();
+
+let hostPeer = null, stream = null;
+const calls = new Map();   // viewer peer id -> MediaConnection
+
+function captureConstraints() {
+  const fps = +$('fps').value;
+  const v = { frameRate: { ideal: fps, max: fps }, cursor: 'always' };
+  if ($('res').value !== 'native') {
+    const [w, h] = $('res').value.split('x').map(Number);
+    v.width = { max: w }; v.height = { max: h };
+  }
+  return v;
+}
+
+/* ---------- room code: fixed per device so friends can save it ---------- */
+const normCode = v => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 16);
+function myCode() {
+  let c = normCode($('code').value);
+  if (c.length < 4) c = randomCode();
+  $('code').value = c;
+  try { localStorage.setItem('screenshare-code', c); } catch {}
+  return c;
+}
+$('code').value = (() => { try { return normCode(localStorage.getItem('screenshare-code')); } catch { return ''; } })() || randomCode();
+myCode();
+$('code').addEventListener('input', () => { $('code').value = normCode($('code').value); });
+$('code').addEventListener('change', myCode);
+$('newCode').onclick = () => { $('code').value = randomCode(); myCode(); };
+
+function displayOptions() {
+  return {
+    video: captureConstraints(),
+    audio: !APP && $('audioSrc').value === 'screen' ? RAW_AUDIO : false,
+    systemAudio: 'include', windowAudio: 'window',   // windowAudio: app-only audio where the browser supports it
+    selfBrowserSurface: 'exclude', surfaceSwitching: 'include',
+  };
+}
+
+/* ---------- audio: every stream always carries an audio track (silent if none), so the source can be swapped live ---------- */
+let silentCtx = null, audioIsReal = false;
+function silentTrack() {
+  if (silentCtx) silentCtx.close().catch(() => {});
+  silentCtx = new AudioContext();
+  return silentCtx.createMediaStreamDestination().stream.getAudioTracks()[0];
+}
+
+async function acquireAudio(src, screenAudio) {
+  const label = $('audioSrc').selectedOptions[0] ? $('audioSrc').selectedOptions[0].textContent.replace(/^★ /, '') : '';
+  if (src.startsWith('native:')) {
+    try { const { track, note } = await startNativeAudio(src.slice(7)); return { track, note, label }; }
+    catch (e) { stopNativeAudio(); return { note: 'Audio failed (' + cleanErr(e) + ').' }; }
+  }
+  if (src === 'none') return {};
+  if (src === 'screen') {
+    if (screenAudio) return { track: screenAudio };
+    return { note: isFirefox
+      ? 'Firefox does not share audio with the screen. Click "Find audio devices" and pick a device, or use Chrome/Edge.'
+      : 'No audio was shared. Best option: set up a game-only audio device (see README) and pick it via "Find audio devices".' };
+  }
+  try {
+    const a = await navigator.mediaDevices.getUserMedia({ audio: { ...RAW_AUDIO, deviceId: { exact: src }, channelCount: 2 } });
+    return { track: a.getAudioTracks()[0], label };
+  } catch (e) { return { note: 'Could not open the audio device (' + e.message + ').' }; }
+}
+
+const senderFor = (pc, kind) => {
+  const t = pc && pc.getTransceivers().find(t => (t.sender.track && t.sender.track.kind === kind) || (t.receiver.track && t.receiver.track.kind === kind));
+  return t ? t.sender : null;
+};
+
+// Put a new track into the stream and into every viewer's connection, without renegotiating.
+async function swapTrack(kind, track) {
+  const old = kind === 'audio' ? stream.getAudioTracks()[0] : stream.getVideoTracks()[0];
+  if (old === track) return;
+  if (old) stream.removeTrack(old);
+  stream.addTrack(track);
+  await Promise.all([...calls.values()].map(c => {
+    const sender = senderFor(c.peerConnection, kind);
+    return sender ? sender.replaceTrack(track).catch(e => console.warn('replaceTrack', e)) : null;
+  }));
+  if (old) old.stop();
+}
+
+async function useAudio(r) {
+  const track = r.track || silentTrack();
+  if (r.track) { track.contentHint = 'music'; startMeter(track); } else stopMeter();
+  audioIsReal = !!r.track;
+  nativeAudioLabel = r.label || '';
+  await swapTrack('audio', track);
+}
+
+async function startSharing() {
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia(displayOptions());
+  } catch (e) {
+    setStatus($('hostStatus'), 'Capture cancelled or blocked: ' + e.message, 'bad');
+    return;
+  }
+  const vt = stream.getVideoTracks()[0];
+  vt.contentHint = $('hint').value;
+  try { await vt.applyConstraints(captureConstraints()); } catch {}
+  vt.addEventListener('ended', stopSharing);   // user clicked the browser's "Stop sharing"
+
+  setStatus($('hostStatus'), 'Starting audio…');
+  const r = await acquireAudio($('audioSrc').value, stream.getAudioTracks()[0]);
+  await useAudio(r);
+  const audioNote = r.note || '';
+  if (audioNote && r.track && r.note) setTimeout(() => setStatus($('hostStatus'), r.note, 'bad'), 1500);
+
+  $('preview').srcObject = stream;
+  $('previewEmpty').classList.add('hidden');
+  $('start').classList.add('hidden');
+  $('stop').classList.remove('hidden');
+  $('switchSource').classList.remove('hidden');
+  $('code').readOnly = true; $('newCode').disabled = true;
+  setStatus($('hostStatus'), 'Connecting to signaling server…');
+  connectHost(myCode(), audioIsReal ? '' : audioNote);
+  startHostStats();
+}
+
+function connectHost(code, audioNote, attempt = 0) {
+  const peer = new Peer(PREFIX + code, peerOptions());
+  hostPeer = peer;
+  peer.on('open', () => {
+    if (hostPeer !== peer) return;
+    if (audioNote) setStatus($('hostStatus'), `Live as ${code}, but without audio: ${audioNote}`, 'bad');
+    else setStatus($('hostStatus'), `Live${audioIsReal ? ' with audio' : ''}. Friends join with code ${code}.`, 'ok');
+    updateViewers();
+  });
+  // Viewer opens a data connection to announce itself; we then call them with the stream.
+  peer.on('connection', conn => {
+    conn.on('open', () => callViewer(conn.peer));
+    conn.on('close', () => dropViewer(conn.peer));
+  });
+  peer.on('error', e => {
+    if (hostPeer !== peer) return;
+    // A fixed code can still be registered for a few seconds after a crash/restart: wait and retry.
+    if (e.type === 'unavailable-id' && stream && attempt < 20) {
+      setStatus($('hostStatus'), `Code ${code} is still in use (a previous session, or someone else). Retrying… If this persists, press New.`, 'bad');
+      peer.destroy();
+      setTimeout(() => { if (stream && hostPeer === peer) connectHost(code, audioNote, attempt + 1); }, 3000);
+      return;
+    }
+    setStatus($('hostStatus'), 'Error: ' + e.type + ' – ' + e.message, 'bad');
+  });
+  peer.on('disconnected', () => { if (hostPeer === peer && !peer.destroyed) peer.reconnect(); });
+}
+
+function callViewer(id) {
+  if (!stream || !hostPeer) return;
+  const prev = calls.get(id);
+  const codec = $('codec').value, kbps = +$('bitrate').value;
+  const call = hostPeer.call(id, stream, { sdpTransform: s => sdpTransform(s, codec, kbps), metadata: { codec, kbps } });
+  calls.set(id, call);
+  if (prev) { try { prev.close(); } catch {} }      // replaced (e.g. codec change): close only after the new call exists
+  call.on('close', () => dropViewer(id, call));
+  call.on('error', () => dropViewer(id, call));
+  // apply bitrate once the sender exists
+  const tryApply = () => call.peerConnection ? applyEncoding(call.peerConnection) : setTimeout(tryApply, 100);
+  tryApply();
+  call.peerConnection && call.peerConnection.addEventListener('connectionstatechange', () => {
+    const st = call.peerConnection.connectionState;
+    if (st === 'connected') applyEncoding(call.peerConnection);
+    if (st === 'failed' || st === 'closed') dropViewer(id, call);
+    updateViewers();
+  });
+  updateViewers();
+}
+
+// Drops a viewer; with `call` given, only if that call is still the current one for them.
+function dropViewer(id, call) {
+  const c = calls.get(id);
+  if (!c || (call && c !== call)) return;
+  calls.delete(id);
+  try { c.close(); } catch {}
+  updateViewers();
+}
+
+/* ---------- live changes ---------- */
+let audioBusy = false;
+async function switchAudio() {
+  if (!stream || audioBusy) return;
+  audioBusy = true;
+  try {
+    setStatus($('hostStatus'), 'Switching audio…');
+    stopNativeAudio();                         // only one native capture at a time
+    const src = $('audioSrc').value;
+    const r = await acquireAudio(src, null);
+    if (src === 'screen' && !r.track) r.note = 'Screen audio comes with the window you pick: press "Change window" and pick it again with audio.';
+    await useAudio(r);
+    const o = $('audioSrc').selectedOptions[0];
+    if (r.note) setStatus($('hostStatus'), (r.track ? '' : 'No audio now: ') + r.note, 'bad');
+    else if (o && (isWholeSystem(o.label) || o.value === 'native:system')) setStatus($('hostStatus'), `Audio switched to "${o.label}". It captures all sound, including Discord voices.`, 'bad');
+    else setStatus($('hostStatus'), r.track ? `Audio switched to ${r.label || 'the new source'}.` : 'Audio off.', 'ok');
+  } finally { audioBusy = false; }
+}
+$('audioSrc').addEventListener('change', switchAudio);
+
+async function switchSource() {
+  if (!stream) return;
+  let ns;
+  try { ns = await navigator.mediaDevices.getDisplayMedia(displayOptions()); }
+  catch (e) { setStatus($('hostStatus'), 'Kept the current window (' + e.message + ').', ''); return; }
+  if (!stream) { ns.getTracks().forEach(t => t.stop()); return; }
+  const nv = ns.getVideoTracks()[0];
+  nv.contentHint = $('hint').value;
+  try { await nv.applyConstraints(captureConstraints()); } catch {}
+  const ov = stream.getVideoTracks()[0];
+  if (ov) ov.removeEventListener('ended', stopSharing);
+  await swapTrack('video', nv);
+  nv.addEventListener('ended', stopSharing);
+  $('preview').srcObject = null; $('preview').srcObject = stream;
+  const na = ns.getAudioTracks()[0];
+  if (na && !APP && $('audioSrc').value === 'screen') await useAudio({ track: na });
+  else if (na) na.stop();
+  const name = nv.label && !/^(screen|window|web-contents-media-stream):/i.test(nv.label) ? `"${nv.label}"` : 'the new window/screen';
+  setStatus($('hostStatus'), `Now sharing ${name}. Viewers stayed connected.`, 'ok');
+}
+$('switchSource').onclick = switchSource;
+
+function updateViewers() {
+  const n = [...calls.values()].filter(c => c.peerConnection && c.peerConnection.connectionState === 'connected').length;
+  $('viewers').textContent = hostPeer ? `${n} viewer${n === 1 ? '' : 's'} watching` : '';
+}
+
+async function applyEncoding(pc) {
+  const kbps = +$('bitrate').value, fps = +$('fps').value;
+  for (const sender of pc.getSenders()) {
+    if (!sender.track) continue;
+    const p = sender.getParameters();
+    if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+    if (sender.track.kind === 'video') {
+      p.encodings[0].maxBitrate = kbps * 1000;
+      p.encodings[0].maxFramerate = fps;
+      p.encodings[0].priority = 'high';
+      p.encodings[0].networkPriority = 'high';
+      p.degradationPreference = $('hint').value === 'motion' ? 'maintain-framerate' : 'maintain-resolution';
+    } else {
+      p.encodings[0].maxBitrate = 160000;
+    }
+    try { await sender.setParameters(p); } catch (e) {
+      // some browsers reject degradationPreference; retry without it
+      delete p.degradationPreference;
+      try { await sender.setParameters(p); } catch (e2) { console.warn('setParameters', e2); }
+    }
+  }
+}
+
+async function applyLiveSettings() {
+  if (!stream) return;
+  const vt = stream.getVideoTracks()[0];
+  vt.contentHint = $('hint').value;
+  try { await vt.applyConstraints(captureConstraints()); } catch (e) { console.warn(e); }
+  for (const c of calls.values()) if (c.peerConnection) applyEncoding(c.peerConnection);
+}
+['res', 'fps', 'bitrate', 'hint'].forEach(id => $(id).addEventListener('change', applyLiveSettings));
+$('codec').addEventListener('change', () => {
+  if (!stream || !calls.size) return;
+  setStatus($('hostStatus'), `Codec changed to ${$('codec').selectedOptions[0].textContent}: reconnecting viewers (about a second)…`, 'ok');
+  for (const id of [...calls.keys()]) callViewer(id);
+});
+
+function stopSharing() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stopNativeAudio();
+  stopMeter();
+  if (silentCtx) { silentCtx.close().catch(() => {}); silentCtx = null; }
+  audioIsReal = false;
+  stream = null;
+  for (const id of [...calls.keys()]) dropViewer(id);
+  const peer = hostPeer;
+  hostPeer = null;
+  if (peer) peer.destroy();
+  $('switchSource').classList.add('hidden');
+  $('code').readOnly = false; $('newCode').disabled = false;
+  $('preview').srcObject = null;
+  $('previewEmpty').classList.remove('hidden');
+  $('start').classList.remove('hidden');
+  $('stop').classList.add('hidden');
+  $('hostStats').classList.add('hidden');
+  $('viewers').textContent = '';
+  setStatus($('hostStatus'), 'Stopped.');
+}
+
+$('start').onclick = startSharing;
+$('stop').onclick = stopSharing;
+$('copy').onclick = () => navigator.clipboard.writeText(myCode()).then(() => { $('copy').textContent = 'Copied'; setTimeout(() => $('copy').textContent = 'Copy', 1200); });
+
+/* local audio level, so you can check the game is captured before anyone joins */
+let meter = null;
+function stopMeter() { if (meter) { meter.ctx.close().catch(() => {}); meter = null; } }
+function startMeter(track) {
+  stopMeter();
+  try {
+    const ctx = new AudioContext();
+    const an = ctx.createAnalyser(); an.fftSize = 2048;
+    ctx.createMediaStreamSource(new MediaStream([track])).connect(an);
+    meter = { ctx, an, buf: new Float32Array(an.fftSize) };
+  } catch { meter = null; }
+}
+function meterBar() {
+  if (!meter) return '';
+  meter.an.getFloatTimeDomainData(meter.buf);
+  let peak = 0; for (const v of meter.buf) peak = Math.max(peak, Math.abs(v));
+  const n = Math.min(10, Math.round(Math.sqrt(peak) * 10));
+  return '  ' + '▮'.repeat(n) + '▯'.repeat(10 - n) + (peak < 0.001 ? '  (silent)' : '');
+}
+
+/* host stats: total outgoing bitrate / encoded fps / resolution / encoder */
+let hostStatsTimer = null, lastOut = {};
+function startHostStats() {
+  clearInterval(hostStatsTimer);
+  hostStatsTimer = setInterval(async () => {
+    if (!stream) return clearInterval(hostStatsTimer);
+    const s = stream.getVideoTracks()[0].getSettings();
+    const at = stream.getAudioTracks()[0];
+    const target = +$('fps').value;
+    let viewerLines = '', sourceFps = null, worst = null;
+    for (const [id, c] of calls) {
+      if (!c.peerConnection) continue;
+      const stats = await c.peerConnection.getStats();
+      stats.forEach(r => {
+        // frames actually delivered by the screen capture (not the requested setting)
+        if (r.type === 'media-source' && r.kind === 'video' && r.framesPerSecond != null && sourceFps == null) sourceFps = r.framesPerSecond;
+      });
+      stats.forEach(r => {
+        if (r.type !== 'outbound-rtp' || r.kind !== 'video') return;
+        const prev = lastOut[id];
+        const kbps = prev ? ((r.bytesSent - prev.b) * 8 / (r.timestamp - prev.t)).toFixed(0) : '…';
+        lastOut[id] = { b: r.bytesSent, t: r.timestamp };
+        const codec = stats.get(r.codecId);
+        if (!worst || (r.framesPerSecond || 0) < (worst.framesPerSecond || 0)) worst = r;
+        viewerLines += `\n→ viewer: ${r.frameWidth || '?'}x${r.frameHeight || '?'} ${Math.round(r.framesPerSecond || 0)}fps ${kbps}kbps ` +
+               `${codec ? codec.mimeType.split('/')[1] : ''} ${encoderName(r.encoderImplementation)}` +
+               (r.qualityLimitationReason && r.qualityLimitationReason !== 'none' ? ` [limited: ${r.qualityLimitationReason}]` : '');
+      });
+    }
+    let txt = `capture ${s.width}x${s.height}, ` + (sourceFps == null ? `target ${target}fps (actual shown once a viewer joins)` : `${Math.round(sourceFps)}/${target}fps captured`) +
+              `\naudio: ${at && audioIsReal ? (nativeAudioLabel || at.label || 'on') + meterBar() : 'none'}` + viewerLines;
+    // explain a low frame rate: is the capture starved (GPU busy) or is the encoder behind (CPU)?
+    if (sourceFps != null && sourceFps < target * 0.75 && sourceFps > 0)
+      txt += `\n⚠ capture is getting only ${Math.round(sourceFps)}fps: the game is likely using all of the GPU. Cap the game's fps a bit below its max (see README).`;
+    else if (worst && sourceFps && (worst.framesPerSecond || 0) < sourceFps * 0.75) {
+      const gpu = isHardwareEncoder(worst.encoderImplementation);
+      if (gpu) txt += APP ? `\n⚠ the GPU encoder can't keep up. Try Encoder → CPU (software), then Restart to apply.`
+                          : `\n⚠ the GPU encoder can't keep up. Try codec VP8, or turn off chrome://flags → "Hardware-accelerated video encode".`;
+      else if (worst.qualityLimitationReason === 'cpu') txt += `\n⚠ the CPU encoder can't keep up. Use codec H.264${APP ? ' or Encoder → GPU' : ''}, or lower resolution/fps.`;
+    }
+    $('hostStats').textContent = txt;
+    $('hostStats').classList.remove('hidden');
+    updateViewers();
+  }, 1000);
+}
+
+// Readable names for what WebRTC reports, e.g. "ExternalEncoder (MediaFoundationVideoEncodeAccelerator)".
+function isHardwareEncoder(impl) { return /MediaFoundation|VideoEncodeAccelerator|VaapiVideo|V4L2|VideoToolbox|NVENC|AMF|QSV/i.test(impl || ''); }
+function encoderName(impl) {
+  if (!impl || impl === 'unknown') return '';
+  if (isHardwareEncoder(impl)) return 'GPU encoder' + (/MediaFoundation/i.test(impl) ? ' (Media Foundation)' : /Vaapi/i.test(impl) ? ' (VA-API)' : '');
+  const sw = impl.match(/OpenH264|libvpx|libaom|SVT|dav1d|rav1e/i);
+  return sw ? `CPU encoder (${sw[0]})` : impl;
+}
+
+/* ---------- desktop app: choose GPU or CPU video encoder (needs a restart) ---------- */
+let runningEncoder = null;
+if (APP && APP.getEncoder) {
+  APP.getEncoder().then(v => { runningEncoder = v; $('encoder').value = v; });
+  $('encoder').addEventListener('change', async () => {
+    const v = await APP.setEncoder($('encoder').value);
+    const pending = v !== runningEncoder;
+    $('restartApp').classList.toggle('hidden', !pending);
+    if (pending) setStatus($('hostStatus'), `Encoder → ${v === 'software' ? 'CPU (software)' : 'GPU (hardware)'} after a restart.` +
+      (stream ? ' Restarting ends this stream for a moment; friends rejoin automatically, then press Start sharing again.' : ''), 'ok');
+    else setStatus($('hostStatus'), 'Encoder unchanged.', '');
+  });
+  $('restartApp').onclick = () => { if (stream) stopSharing(); APP.restart(); };
+}
+
+/* =========================== VIEWER =========================== */
+let viewPeer = null, viewCall = null, viewConn = null, viewStatsTimer = null;
+let watchCode = null, retryTimer = null;
+
+function join(codeArg) {
+  const code = normCode(codeArg || $('joinCode').value);
+  if (!code) return;
+  $('joinCode').value = code;
+  leave(true);
+  watchCode = code;
+  setStatus($('viewStatus'), 'Connecting…');
+  $('join').classList.add('hidden'); $('leave').classList.remove('hidden');
+  renderFriends();
+  const peer = viewPeer = new Peer(peerOptions());
+  peer.on('open', connectToHost);
+  peer.on('call', call => {
+    if (viewPeer !== peer) return;
+    const prev = viewCall;
+    viewCall = call;                      // a new call replaces the old one (host changed codec, or rejoined)
+    if (prev) { try { prev.close(); } catch {} }
+    clearTimeout(retryTimer);
+    const { codec = 'auto', kbps = 6000 } = call.metadata || {};
+    call.answer(undefined, { sdpTransform: sd => sdpTransform(sd, codec, kbps) });
+    call.on('stream', st => {
+      if (viewCall !== call) return;
+      const v = $('remote');
+      if (v.srcObject === st) return;     // fired once per track; re-assigning would restart playback
+      v.srcObject = st;
+      v.play().then(() => setMuted(v.muted)).catch(e => {
+        if (e.name !== 'NotAllowedError') return;                // e.g. AbortError from a newer stream: not a block
+        setMuted(true); v.play().catch(() => {});                // sound blocked until a tap: play muted, show the button
+      });
+      keepAwake(true);
+      $('remoteEmpty').classList.add('hidden');
+      setStatus($('viewStatus'), 'Watching ' + (friendName(code) || code), 'ok');
+      lowLatency(call.peerConnection);
+      startViewStats(call.peerConnection);
+    });
+    call.on('close', () => {
+      if (viewCall !== call) return;      // an old, replaced call
+      viewCall = null;
+      clearRemote();
+      setStatus($('viewStatus'), 'Stream ended.', 'bad');
+    });
+    call.peerConnection.addEventListener('iceconnectionstatechange', () => {
+      if (viewCall === call && call.peerConnection.iceConnectionState === 'failed')
+        setStatus($('viewStatus'), 'Could not connect to the host (strict NAT or firewall on one side). Try another network, or see the TURN note in the README.', 'bad');
+    });
+  });
+  peer.on('error', e => {
+    if (viewPeer !== peer) return;
+    if (e.type === 'peer-unavailable') return waitForHost(`${friendName(code) || code} isn't live right now.`);
+    setStatus($('viewStatus'), e.type + ' – ' + e.message, 'bad');
+  });
+  peer.on('disconnected', () => { if (viewPeer === peer && !peer.destroyed) peer.reconnect(); });
+}
+
+function connectToHost() {
+  if (!viewPeer || viewPeer.destroyed || !watchCode) return;
+  const conn = viewPeer.connect(PREFIX + watchCode, { reliable: true });
+  viewConn = conn;
+  conn.on('open', () => { if (viewConn === conn && !viewCall) setStatus($('viewStatus'), 'Connected, waiting for video…'); });
+  conn.on('close', () => {
+    if (viewConn !== conn) return;
+    viewConn = null;
+    if (viewCall) { try { viewCall.close(); } catch {} viewCall = null; }
+    clearRemote();
+    waitForHost('The host stopped sharing.');
+  });
+}
+
+// With "Wait for host" on, keep trying the same code: covers "not live yet" and the host restarting.
+function waitForHost(msg) {
+  clearTimeout(retryTimer);
+  if (!$('autoRetry').checked) { leave(true); setStatus($('viewStatus'), msg, 'bad'); return; }
+  setStatus($('viewStatus'), msg + ' Waiting for them to go live…');
+  retryTimer = setTimeout(connectToHost, 4000);
+}
+
+/* ---------- saved friends ---------- */
+function friends() { try { return JSON.parse(localStorage.getItem('screenshare-friends')) || []; } catch { return []; } }
+function friendName(code) { const f = friends().find(x => x.code === code); return f && f.name !== code ? f.name : ''; }
+function saveFriends(list) { try { localStorage.setItem('screenshare-friends', JSON.stringify(list)); } catch {} renderFriends(); }
+function renderFriends() {
+  $('friends').replaceChildren(...friends().map(f => {
+    const chip = document.createElement('span');
+    chip.className = 'chip' + (f.code === watchCode ? ' on' : '');
+    const go = document.createElement('button');
+    go.className = 'go'; go.title = 'Watch ' + f.name;
+    const b = document.createElement('b'); b.textContent = f.name;
+    const sm = document.createElement('small'); sm.textContent = f.code;
+    go.append(b, sm);
+    go.onclick = () => join(f.code);
+    const del = document.createElement('button');
+    del.className = 'del'; del.textContent = '×'; del.title = 'Remove ' + f.name;
+    del.onclick = () => saveFriends(friends().filter(x => x.code !== f.code));
+    chip.append(go, del);
+    return chip;
+  }));
+}
+$('saveFriend').onclick = () => {
+  const code = normCode($('joinCode').value);
+  if (code.length < 4) { setStatus($('viewStatus'), 'Type the room code first, then a name, then Save.', 'bad'); return; }
+  const name = $('friendName').value.trim() || code;
+  saveFriends([...friends().filter(f => f.code !== code), { name, code }]);
+  $('friendName').value = '';
+};
+$('friendName').addEventListener('keydown', e => { if (e.key === 'Enter') $('saveFriend').click(); });
+try { $('autoRetry').checked = localStorage.getItem('screenshare-autoretry') !== '0'; } catch {}
+$('autoRetry').addEventListener('change', () => { try { localStorage.setItem('screenshare-autoretry', $('autoRetry').checked ? '1' : '0'); } catch {} });
+renderFriends();
+
+function lowLatency(pc) {
+  pc.getReceivers().forEach(r => {
+    try { r.jitterBufferTarget = 0; } catch {}
+    try { r.playoutDelayHint = 0; } catch {}
+  });
+}
+
+function clearRemote() {
+  $('remote').srcObject = null;
+  $('unmute').classList.add('hidden');
+  keepAwake(false);
+  $('remoteEmpty').classList.remove('hidden');
+  $('viewStats').classList.add('hidden');
+  clearInterval(viewStatsTimer);
+}
+
+function leave(silent) {
+  clearTimeout(retryTimer);
+  watchCode = null; viewConn = null;
+  const call = viewCall, peer = viewPeer;
+  viewCall = null; viewPeer = null;
+  if (call) { try { call.close(); } catch {} }
+  if (peer) peer.destroy();
+  clearRemote();
+  $('join').classList.remove('hidden'); $('leave').classList.add('hidden');
+  renderFriends();
+  if (!silent) setStatus($('viewStatus'), 'Left.');
+}
+
+function startViewStats(pc) {
+  let last = null, lastA = null;
+  clearInterval(viewStatsTimer);
+  viewStatsTimer = setInterval(async () => {
+    if (!pc || pc.connectionState === 'closed') return clearInterval(viewStatsTimer);
+    const stats = await pc.getStats();
+    let rtt = null, relay = false;
+    stats.forEach(r => {
+      if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) {
+        rtt = r.currentRoundTripTime;
+        const lc = stats.get(r.localCandidateId), rc = stats.get(r.remoteCandidateId);
+        relay = (lc && lc.candidateType === 'relay') || (rc && rc.candidateType === 'relay');
+      }
+    });
+    let audio = 'audio: none in this stream';
+    stats.forEach(r => {
+      if (r.type !== 'inbound-rtp' || r.kind !== 'audio') return;
+      const kbps = lastA ? ((r.bytesReceived - lastA.b) * 8 / (r.timestamp - lastA.t)).toFixed(0) : '…';
+      lastA = { b: r.bytesReceived, t: r.timestamp };
+      const level = r.audioLevel != null ? `  level ${'▮'.repeat(Math.min(10, Math.round(Math.sqrt(r.audioLevel) * 10))) || '·'}` : '';
+      audio = `audio ${kbps} kbps${level}`;
+    });
+    stats.forEach(r => {
+      if (r.type !== 'inbound-rtp' || r.kind !== 'video') return;
+      const kbps = last ? ((r.bytesReceived - last.b) * 8 / (r.timestamp - last.t)).toFixed(0) : '…';
+      last = { b: r.bytesReceived, t: r.timestamp };
+      const codec = stats.get(r.codecId);
+      $('viewStats').textContent =
+        `${r.frameWidth || '?'}x${r.frameHeight || '?'} @ ${Math.round(r.framesPerSecond || 0)}fps  ${kbps} kbps  ${codec ? codec.mimeType.split('/')[1] : ''}\n` +
+        `ping ${rtt != null ? Math.round(rtt * 1000) + 'ms' : '?'}  lost ${r.packetsLost || 0}  dropped ${r.framesDropped || 0}${relay ? '  (via relay)' : ''}\n${audio}`;
+    });
+    $('viewStats').classList.toggle('hidden', !$('showStats').checked);
+  }, 1000);
+}
+
+$('join').onclick = () => join();
+$('joinCode').addEventListener('keydown', e => { if (e.key === 'Enter') join(); });
+$('leave').onclick = () => leave(false);
+const TOUCH = matchMedia('(hover: none)').matches;
+async function toggleFullscreen() {
+  if (document.fullscreenElement) { await document.exitFullscreen().catch(() => {}); return; }
+  await $('viewStage').requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+  // phones: turn sideways for a landscape stream (only allowed while fullscreen)
+  const v = $('remote');
+  if (TOUCH && screen.orientation && screen.orientation.lock && v.videoWidth >= v.videoHeight) screen.orientation.lock('landscape').catch(() => {});
+}
+document.addEventListener('fullscreenchange', () => {
+  $('fs').textContent = document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen';
+  if (!document.fullscreenElement && screen.orientation && screen.orientation.unlock) try { screen.orientation.unlock(); } catch {}
+});
+$('fs').onclick = toggleFullscreen;
+$('viewStage').addEventListener('dblclick', toggleFullscreen);
+// touch: tap the video to show the controls for a few seconds
+let uiTimer = null;
+$('viewStage').addEventListener('click', e => {
+  if (!TOUCH || e.target.closest('button, input, label')) return;
+  $('viewStage').classList.toggle('ui');
+  clearTimeout(uiTimer);
+  if ($('viewStage').classList.contains('ui')) uiTimer = setTimeout(() => $('viewStage').classList.remove('ui'), 3500);
+});
+function setMuted(m) {
+  const v = $('remote'); v.muted = m;
+  $('mute').textContent = m ? 'Unmute' : 'Mute';
+  $('unmute').classList.toggle('hidden', !m || !v.srcObject);
+}
+$('mute').onclick = () => setMuted(!$('remote').muted);
+$('unmute').onclick = () => { setMuted(false); $('remote').play().catch(() => {}); };
+if (TOUCH) $('showStats').checked = false;   // keep the small screen clear; tick "Stats" to show them
+
+// keep the phone's screen on while watching
+let wakeLock = null;
+async function keepAwake(on) {
+  try {
+    if (on && !wakeLock && navigator.wakeLock && document.visibilityState === 'visible') {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } else if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch {}
+}
+document.addEventListener('visibilitychange', () => { if ($('remote').srcObject) keepAwake(true); });
+$('vol').oninput = e => { $('remote').volume = +e.target.value; };
+$('showStats').onchange = e => $('viewStats').classList.toggle('hidden', !e.target.checked);
+
+/* ---------- tabs ---------- */
+function showTab(which) {
+  $('host').classList.toggle('hidden', which !== 'host');
+  $('view').classList.toggle('hidden', which !== 'view');
+  $('tabHost').classList.toggle('on', which === 'host');
+  $('tabView').classList.toggle('on', which === 'view');
+}
+$('tabHost').onclick = () => showTab('host');
+$('tabView').onclick = () => showTab('view');
+if (APP && APP.openRemote) $('tabRemote').onclick = () => APP.openRemote();
+
+// screenshare.html#ABC123 opens straight into watch mode
+if (location.hash.length > 1) { showTab('view'); join(location.hash.slice(1)); }
+if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+  // phones and tablets can't share their screen from a browser: show only the watch page
+  document.querySelector('header .tabs').classList.add('hidden');
+  if (!APP) showTab('view');
+  if (!location.hash || location.hash.length < 2) setStatus($('viewStatus'), friends().length ? 'Tap a friend to watch.' : 'Enter a room code to watch. Save it with a name for one-tap access next time.');
+}
+
+/* ---------- hosted version: shareable watch links + installable on phones ---------- */
+const WATCH_URL = '';   // set at build time for the desktop app (where the page is a local file)
+const watchBase = location.protocol.startsWith('http') ? location.origin + location.pathname : WATCH_URL;
+if (watchBase) {
+  $('copyLink').classList.remove('hidden');
+  $('copyLink').onclick = () => navigator.clipboard.writeText(watchBase + '#' + myCode())
+    .then(() => { $('copyLink').textContent = 'Link copied'; setTimeout(() => $('copyLink').textContent = 'Copy watch link', 1200); });
+}
+if (window.isSecureContext && location.protocol.startsWith('http') && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+window.addEventListener('hashchange', () => { const c = normCode(location.hash.slice(1)); if (c && c !== watchCode) { showTab('view'); join(c); } });
+</script>
+</body>
+</html>

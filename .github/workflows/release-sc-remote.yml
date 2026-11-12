@@ -1,0 +1,36 @@
+# Builds the SC-Remote installer on Windows and publishes it as a GitHub release, with the signed update manifest
+# that installed copies check at startup.
+#   Release a new version: raise "version" in build/sc-remote/release.json, commit, then either push a tag "v<version>"
+#   (git tag v1.3.1 && git push origin v1.3.1) or run this workflow from the Actions tab.
+name: SC-Remote release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sc-remote-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      # (no install scripts: the build needs none, and the streaming edition's native audio module isn't used here)
+      - run: npm ci --ignore-scripts
+      - run: npm run dist:remote
+      - name: Sign the update manifest and publish the release
+        env:
+          SC_REMOTE_UPDATE_KEY: ${{ secrets.SC_REMOTE_UPDATE_KEY }}
+          RELEASE_NOTES: ${{ vars.SC_REMOTE_RELEASE_NOTES }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-remote.js --publish

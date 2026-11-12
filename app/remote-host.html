@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ScreenShare remote host</title>
+<!-- Hidden window: keeps this PC reachable (ID + password, or lab members' keys) and serves one controller at a time. -->
+<script src="peerjs.min.js"></script>
+<script src="remote-common.js"></script>
+</head>
+<body>
+<script>
+'use strict';
+const R = window.remoteApp;
+let cfg = null, peer = null, session = null, attempt = 0, retryTimer = null;
+
+const status = (state, extra = {}) => R.status({ state, ...extra }).catch(() => {});
+
+/* ---------------- signaling: stay reachable forever ---------------- */
+function connectPeer() {
+  clearTimeout(retryTimer);
+  if (peer && !peer.destroyed) peer.destroy();
+  status('starting');
+  window.__net = cfg.mode === 'lab' ? { server: cfg.settings.server, turn: cfg.settings.turn } : null;
+  const p = peer = new Peer(cfg.peerId, peerOptions());
+  p.on('open', () => { attempt = 0; if (!session) status('online'); });
+  p.on('connection', conn => (conn.label === 'files' ? onFiles(conn) : onControl(conn)));
+  p.on('disconnected', () => {
+    if (peer !== p || p.destroyed) return;
+    status('starting');
+    setTimeout(() => { if (peer === p && !p.destroyed && p.disconnected) p.reconnect(); }, 1000);
+  });
+  p.on('error', e => {
+    if (peer !== p) return;
+    // errors about one connection don't affect being reachable
+    if (['peer-unavailable', 'negotiation-failed', 'webrtc', 'disconnected'].includes(e.type)) return;
+    // unavailable-id: the server still remembers this PC from before a reboot/crash; it frees it within ~1 min
+    const msg = e.type === 'unavailable-id' ? 'ID still registered from a previous run, retrying' : (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error' || e.type === 'socket-closed') ? 'no internet / signaling server unreachable' : e.message;
+    status('error', { message: msg });
+    p.destroy();
+    // the old registration disappears within seconds: retry steadily; otherwise back off up to 30 s
+    retryTimer = setTimeout(connectPeer, e.type === 'unavailable-id' ? 3000 : Math.min(30000, 2000 * 2 ** attempt++));
+  });
+}
+// watchdog: sleep/resume or network changes can leave the connection silently dead
+setInterval(() => { if (peer && (peer.destroyed || (peer.disconnected && !retryTimer))) connectPeer(); }, 30000);
+addEventListener('online', () => { if (peer && peer.disconnected) connectPeer(); });
+
+/* ---------------- control connection: auth, input, clipboard, quality ---------------- */
+function onControl(conn) {
+  const nonce = randomHex(32);
+  let authed = false;
+  const timeout = setTimeout(() => { if (!authed) conn.close(); }, 20000);
+  conn.on('open', async () => {
+    // caps.bound: sign-ins are tied to this connection; caps.sas: real Ctrl+Alt+Del (the agent on Windows)
+    if (cfg.mode !== 'lab') { conn.send({ t: 'hello', v: 3, salt: cfg.salt, nonce, name: cfg.name, os: cfg.os, caps: { bound: true, sas: !!cfg.agent } }); return; }
+    // lab: prove this PC's identity, bound to this exact encrypted connection
+    const [hostFp, clientFp] = dtlsFingerprints(conn);
+    const sig = await R.hostSignHello(nonce, hostFp, clientFp);
+    conn.send({ t: 'hello', v: 2, mode: 'lab', nonce, name: cfg.pc, pc: cfg.pc, lab: cfg.lab, labId: cfg.labId, hostKey: cfg.hostKey, version: cfg.version, sig, os: cfg.os });
+  });
+  conn.on('data', async msg => {
+    if (!msg || typeof msg !== 'object') return;
+    if (!authed) {
+      if (msg.t !== 'auth') return;
+      let r;
+      const name = String(msg.name || conn.peer).slice(0, 60);
+      if (cfg.mode === 'lab') {
+        if (msg.mode !== 'lab') { conn.send({ t: 'denied', reason: 'This lab PC only accepts lab members (use ScreenShare Remote).' }); setTimeout(() => conn.close(), 500); return; }
+        const [hostFp, clientFp] = dtlsFingerprints(conn);      // computed here, never taken from the other side
+        r = await R.verifyKey({ pub: msg.pub, sig: msg.sig, nonce, hostFp, clientFp, purpose: msg.purpose === 'publish' ? 'publish' : 'session', policy: msg.policy, name }, name);
+        if (r.ok && msg.purpose === 'publish') { conn.send({ t: 'policy-ok', version: r.version }); setTimeout(() => conn.close(), 500); return; }
+      } else {
+        const [hostFp, clientFp] = dtlsFingerprints(conn);      // computed here, never taken from the other side
+        r = await R.verify(nonce, String(msg.mac || ''), name, msg.bound && hostFp && clientFp ? { hostFp, clientFp } : null);
+      }
+      if (!r.ok) { conn.send({ t: 'denied', reason: r.reason }); setTimeout(() => conn.close(), 500); return; }
+      authed = true; clearTimeout(timeout);
+      startSession(conn, msg, r).catch(e => { conn.send({ t: 'denied', reason: 'Could not capture the screen: ' + e.message }); setTimeout(() => conn.close(), 500); endSession(); });
+      return;
+    }
+    if (!session || session.conn !== conn) return;
+    session.seen = Date.now();
+    switch (msg.t) {
+      case 'leave': endSession(); break;           // the controller closed its window
+      case 'm': case 'b': case 'w': case 'k': case 'release': R.input(msg); break;
+      case 'ping': conn.send({ t: 'pong', ts: msg.ts }); break;
+      case 'sas': R.sas(); break;
+      case 'audit-get':          // lab admins can read this PC's connection log
+        if (session.role === 'admin') conn.send({ t: 'audit', items: await R.auditTail() });
+        else conn.send({ t: 'notice', text: 'Only lab admins can read the log.' });
+        break;
+      case 'clip': if (session.clip) R.clipSet({ kind: msg.kind, data: msg.kind === 'image' ? toBytes(msg.data) : String(msg.data) }); break;
+      case 'clip-files':        // the controller copied files; they're now in base/: put them on this clipboard
+        if (!session || !session.clip || !allowFiles()) break;
+        try { await R.clipSet({ kind: 'files', paths: await R.fsJoin(msg.base, msg.roots) }); conn.send({ t: 'clip-files-ok', n: msg.roots.length }); }
+        catch (e) { R.log('clip-files failed: ' + e.message); conn.send({ t: 'notice', text: 'Could not put the files on the clipboard there: ' + e.message }); }
+        break;
+      case 'drop-files': {      // the controller dropped files on the screen at (x, y)
+        if (!allowFiles()) { conn.send({ t: 'drop-result', ok: false, reason: 'file transfer is turned off for this lab' }); break; }
+        const s0 = session;     // the session may end while the drop runs
+        try {
+          const paths = await R.fsJoin(msg.base, msg.roots);
+          const r = await R.dropFiles(paths, +msg.x, +msg.y);
+          if (s0.clip) R.clipSet({ kind: 'files', paths }).catch(() => {});      // also ready for Ctrl+V
+          if (!r.ok) R.log('drop failed: ' + r.reason);
+          if (conn.open) conn.send({ t: 'drop-result', ok: r.ok, reason: r.reason, n: msg.roots.length });
+        } catch (e) { R.log('drop failed: ' + e.message); if (conn.open) conn.send({ t: 'drop-result', ok: false, reason: e.message }); }
+        break;
+      }
+      case 'clip-sync': session.clip = !!msg.on && allowClipboard(); R.clipWatch(session.clip); break;
+      case 'display': switchDisplay(msg.i).catch(e => conn.send({ t: 'notice', text: 'Could not switch screen: ' + e.message })); break;
+      case 'quality': applyQuality(msg).catch(() => {}); break;
+    }
+  });
+  conn.on('close', () => { clearTimeout(timeout); if (session && session.conn === conn) endSession(); });
+  conn.on('error', () => {});
+}
+
+// a controller that vanished without closing the connection (crash, network gone): it pings every 2 s
+setInterval(() => { if (session && Date.now() - session.seen > 12000) { R.log('the controller stopped answering'); endSession(); } }, 3000);
+
+const allowClipboard = () => cfg.mode !== 'lab' || cfg.settings.clipboard !== false;
+const allowFiles = () => cfg.mode !== 'lab' || cfg.settings.files !== false;
+
+async function startSession(conn, opts, auth = {}) {
+  if (session) endSession('Another computer took over');
+  const q = { fps: [15, 30, 60].includes(opts.fps) ? opts.fps : 30, sharp: opts.sharp !== false, codec: ['VP8', 'VP9', 'H264', 'AV1'].includes(opts.codec) ? opts.codec : 'VP8' };
+  session = { conn, token: randomHex(16), q, clip: opts.clip !== false && allowClipboard(), stream: null, call: null, display: 0, files: new Set(),
+              role: auth.member ? auth.member.role : 'owner', sid: auth.sid, seen: Date.now() };
+  const displays = await R.displays();
+  const want = Number.isInteger(opts.display) && displays[opts.display] ? opts.display : Math.max(0, displays.findIndex(d => d.primary));
+  try { await capture(want); }
+  catch (e) {
+    if (cfg.mode !== 'lab' && !cfg.agent) throw e;
+    // a lab PC at the sign-in screen: the normal capture may only work once someone signs in; until then the
+    // secure-desktop picture is shown (and the normal capture starts when the desktop comes back)
+    R.log('screen capture unavailable (' + e.message + '): showing the sign-in screen picture');
+    session.display = want;
+    enterSecure();
+    session.stream = new MediaStream([secure.track]);
+  }
+  const ok = { t: 'ok', token: session.token, os: cfg.os, name: cfg.name, current: session.display,
+              displays: displays.map(d => ({ i: d.i, label: d.label, primary: d.primary, w: d.rect.width, h: d.rect.height })) };
+  if (cfg.mode === 'lab') {
+    Object.assign(ok, { lab: cfg.lab, role: session.role, allow: { clipboard: allowClipboard(), files: allowFiles() } });
+    if ((opts.have || 0) < auth.version) ok.policy = await R.hostPolicy();     // bring the member's copy up to date
+  }
+  conn.send(ok);
+  call(conn.peer);
+  if (session.clip) R.clipWatch(true);
+}
+
+async function capture(i) {
+  const info = await R.selectDisplay(i);
+  if (!info) throw new Error('no screen found');
+  const stream = await navigator.mediaDevices.getDisplayMedia({ audio: false,
+    video: { frameRate: { ideal: session.q.fps, max: session.q.fps }, cursor: 'always' } });
+  const t = stream.getVideoTracks()[0];
+  t.contentHint = session.q.sharp ? 'detail' : 'motion';
+  const old = session.stream;
+  session.stream = stream; session.display = info.i;
+  if (old && session.call && session.call.peerConnection) {
+    const sender = session.call.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+    if (sender) await sender.replaceTrack(t);
+  }
+  if (old) old.getTracks().forEach(x => x.stop());
+  if (secure && secure.live) await videoSender()?.replaceTrack(secure.track);   // still on the sign-in screen
+  return info;
+}
+
+function call(peerId) {
+  const s = session, q = s.q, kbps = q.sharp ? 12000 : 6000;
+  const prev = s.call;
+  const c = peer.call(peerId, s.stream, { metadata: { token: s.token }, sdpTransform: sdp => remoteSdp(sdp, q.codec, kbps) });
+  s.call = c;
+  if (prev) setTimeout(() => { try { prev.close(); } catch {} }, 300);   // client switches to the new call first
+  const apply = () => c.peerConnection && encoding(c.peerConnection);
+  const wait = setInterval(() => { if (c.peerConnection) { clearInterval(wait); apply();
+    c.peerConnection.addEventListener('connectionstatechange', () => { if (c.peerConnection.connectionState === 'connected') apply(); }); } }, 50);
+  c.on('error', () => {});
+}
+
+async function encoding(pc) {
+  if (!session) return;
+  const q = session.q;
+  for (const sender of pc.getSenders()) {
+    if (!sender.track || sender.track.kind !== 'video') continue;
+    const p = sender.getParameters();
+    if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+    p.encodings[0].maxBitrate = (q.sharp ? 12000 : 6000) * 1000;
+    p.encodings[0].maxFramerate = q.fps;
+    p.encodings[0].priority = 'high'; p.encodings[0].networkPriority = 'high';
+    // sharp: keep text crisp and drop frames when the network is tight; smooth: keep moving, blur first
+    p.degradationPreference = q.sharp ? 'maintain-resolution' : 'maintain-framerate';
+    try { await sender.setParameters(p); } catch { delete p.degradationPreference; try { await sender.setParameters(p); } catch {} }
+  }
+}
+
+async function applyQuality(msg) {
+  if (!session) return;
+  const q = session.q, codecChanged = msg.codec && msg.codec !== q.codec;
+  if ([15, 30, 60].includes(msg.fps)) q.fps = msg.fps;
+  if (typeof msg.sharp === 'boolean') q.sharp = msg.sharp;
+  if (['VP8', 'VP9', 'H264', 'AV1'].includes(msg.codec)) q.codec = msg.codec;
+  const t = session.stream && session.stream.getVideoTracks()[0];
+  if (t) { t.contentHint = q.sharp ? 'detail' : 'motion'; await t.applyConstraints({ frameRate: { ideal: q.fps, max: q.fps } }).catch(() => {}); }
+  if (codecChanged) call(session.conn.peer);
+  else if (session.call && session.call.peerConnection) await encoding(session.call.peerConnection);
+}
+
+async function switchDisplay(i) {
+  if (!session) return;
+  const info = await capture(i);
+  session.conn.send({ t: 'display', i: info.i });
+}
+
+function endSession(reason) {
+  const s = session; if (!s) return;
+  session = null;
+  try { if (reason && s.conn.open) s.conn.send({ t: 'bye', reason }); } catch {}
+  setTimeout(() => { try { s.conn.close(); } catch {} }, reason ? 300 : 0);
+  try { s.call && s.call.close(); } catch {}
+  if (s.stream) s.stream.getTracks().forEach(t => t.stop());
+  leaveSecure(true);
+  for (const f of s.files) { try { f.close(); } catch {} }
+  R.clipWatch(false);
+  R.sessionEnd(s.sid);
+  status(peer && peer.open ? 'online' : 'starting');
+}
+
+R.onClip(async p => {
+  if (!session || !session.clip || !session.conn.open) return;
+  if (p.kind === 'files') {
+    // files copied here: describe them; the controller fetches them over the files connection
+    try {
+      const w = await R.fsWalk(p.paths);
+      if (session && session.conn.open) session.conn.send({ t: 'clip-files', items: w.items, total: w.total, roots: w.roots });
+    } catch (e) { session.conn.send({ t: 'notice', text: 'Could not read the copied files: ' + e.message }); }
+    return;
+  }
+  session.conn.send({ t: 'clip', kind: p.kind, data: p.data });
+});
+R.onKick(reason => endSession(reason || 'Disconnected by the person at that PC'));
+R.onInputError(m => { if (session) session.conn.send({ t: 'notice', text: 'Mouse/keyboard control is unavailable: ' + m }); });
+
+/* ---------------- lab agent, Windows: sign-in / lock / admin-prompt screens ---------------- */
+// Those live on a separate secure desktop the normal capture can't see. While one is up, a helper sends JPEG
+// frames, drawn on a canvas whose track temporarily replaces the screen track.
+let secure = null;          // { canvas, ctx, track, live }
+const videoSender = () => { const pc = session && session.call && session.call.peerConnection; return pc ? pc.getSenders().find(s => s.track && s.track.kind === 'video') : null; };
+R.onDesktop(name => {
+  if (!session) return;
+  if (name === 'Default') leaveSecure(); else enterSecure();
+  if (session.conn.open) session.conn.send({ t: 'desktop', name });
+});
+function enterSecure() {
+  if (secure) return;
+  const canvas = document.createElement('canvas');
+  canvas.width = 1280; canvas.height = 720;
+  const track = canvas.captureStream(10).getVideoTracks()[0];
+  track.contentHint = 'detail';
+  secure = { canvas, ctx: canvas.getContext('2d'), track, live: false };
+}
+R.onFrame(async jpeg => {
+  const sc = secure;
+  if (!sc || !session) return;
+  let img;
+  try { img = await createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' })); } catch { return; }
+  if (secure !== sc) { img.close(); return; }
+  if (sc.canvas.width !== img.width || sc.canvas.height !== img.height) { sc.canvas.width = img.width; sc.canvas.height = img.height; }
+  sc.ctx.drawImage(img, 0, 0); img.close();
+  if (!sc.live) {             // switch only once there is a picture (no black flash)
+    sc.live = true;
+    const sender = videoSender();
+    if (sender) await sender.replaceTrack(sc.track).catch(e => R.log('secure track: ' + e.message));
+  }
+});
+async function leaveSecure(ending = false) {
+  const sc = secure; secure = null;
+  if (!sc) return;
+  if (!ending && session) {
+    // start the screen capture afresh: the one from before may have stopped or frozen while the secure desktop was up
+    await capture(session.display).catch(e => R.log('recapture: ' + e.message));
+  }
+  sc.track.stop();
+}
+
+/* ---------------- files connection ---------------- */
+const errText = e => String(e && e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+function onFiles(conn) {
+  if (!session || !conn.metadata || conn.metadata.token !== session.token || !allowFiles()) { conn.on('open', () => conn.close()); return; }
+  session.files.add(conn);
+  const uploads = new Map();      // id -> { handle, path, got, size }
+  const cancelled = new Set();
+  const reply = o => { if (conn.open) conn.send(o); };
+  // one message at a time, in order (a file must be open before its data arrives); cancel acts at once
+  let queue = Promise.resolve();
+  conn.on('data', m => {
+    if (!m || typeof m !== 'object') return;
+    if (m.op === 'cancel') { cancelled.add(m.id); return; }
+    queue = queue.then(() => handle(m));
+  });
+  async function handle(m) {
+    try {
+      switch (m.op) {
+        case 'list': reply({ id: m.id, ok: true, ...(await R.fsList(m.path || '')) }); break;
+        case 'walk': reply({ id: m.id, ok: true, ...(await R.fsWalk(m.paths || [])) }); break;
+        case 'stage': reply({ id: m.id, ok: true, path: await R.fsStage() }); break;
+        case 'unique': reply({ id: m.id, ok: true, names: await R.fsUnique(m.base, m.names || []) }); break;
+        case 'mkdir': await R.fsMkdirRel(m.base, m.rel); reply({ id: m.id, ok: true }); break;
+        case 'get': sendFile(m); break;                                   // streams on its own
+        case 'put': {
+          const f = await R.fsOpenWriteRel(m.base, m.rel);
+          uploads.set(m.id, { handle: f.handle, path: f.path });
+          reply({ id: m.id, ok: true, path: f.path });
+          break;
+        }
+        case 'chunk': { const u = uploads.get(m.id); if (u) await R.fsWrite(u.handle, toBytes(m.data)); break; }
+        case 'end': {
+          const u = uploads.get(m.id); if (!u) break;
+          uploads.delete(m.id);
+          await R.fsClose(u.handle, m.cancel ? u.path : null);
+          reply({ id: m.id, saved: !m.cancel, path: u.path });
+          break;
+        }
+      }
+    } catch (e) { reply({ id: m.id, ok: false, error: errText(e) }); }
+  }
+  async function sendFile(m) {
+    let f;
+    try { f = await R.fsOpenRead(m.path); } catch (e) { reply({ id: m.id, ok: false, error: errText(e) }); return; }
+    reply({ id: m.id, ok: true, size: f.size, name: f.name });
+    try {
+      for (let off = 0; off < f.size; ) {
+        if (cancelled.has(m.id) || !conn.open) break;
+        const data = await R.fsRead(f.handle, off, CHUNK);
+        if (!data.length) break;
+        await drain(conn);
+        reply({ id: m.id, chunk: data }); off += data.length;
+      }
+      reply({ id: m.id, done: true, cancelled: cancelled.has(m.id) });
+    } catch (e) { reply({ id: m.id, ok: false, error: errText(e) }); }
+    finally { await R.fsClose(f.handle); cancelled.delete(m.id); }
+  }
+  conn.on('close', async () => {
+    if (session) session.files.delete(conn);
+    for (const u of uploads.values()) await R.fsClose(u.handle, u.path).catch(() => {});   // drop partial uploads
+    uploads.clear();
+  });
+  conn.on('error', () => {});
+}
+
+// lab: a newer policy arrived (from a member or an admin). A new connection server takes effect between sessions.
+R.onPolicyChanged(c => {
+  if (!c) return;
+  const net = x => JSON.stringify([x.settings.server, x.settings.turn]);
+  const moved = net(c) !== net(cfg);
+  cfg = { ...cfg, ...c };
+  if (moved) { const go = () => (session ? setTimeout(go, 5000) : connectPeer()); setTimeout(go, 1500); }
+});
+
+(async () => {
+  cfg = await R.hostConfig();
+  if (!cfg || (cfg.mode !== 'lab' && !cfg.salt)) { status('error', { message: cfg ? 'no password set' : 'not set up' }); return; }
+  connectPeer();
+})();
+</script>
+</body>
+</html>

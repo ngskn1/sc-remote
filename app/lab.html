@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ScreenShare Remote</title>
+<script src="peerjs.min.js"></script>
+<script src="remote-common.js"></script>
+<style>
+  :root { --bg: #111318; --panel: #1a1d24; --line: #2a2e38; --text: #e6e8ee; --muted: #8b91a1; --accent: #5b8cff; --ok: #3ecf8e; --bad: #ff6b6b; --warn: #f5b84b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 18px 16px 40px; display: grid; gap: 16px; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; } h2 { font-size: 15px; margin: 0 0 10px; } h3 { font-size: 13.5px; margin: 16px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  button, input, select, textarea { font: inherit; color: var(--text); background: #12141a; border: 1px solid var(--line); border-radius: 6px; padding: 7px 12px; }
+  button { cursor: pointer; background: var(--panel); } button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  button.small { padding: 3px 9px; font-size: 12.5px; }
+  button:disabled { opacity: .5; cursor: default; }
+  textarea { width: 100%; resize: vertical; font: 12.5px/1.4 ui-monospace, monospace; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0; }
+  .grow { flex: 1; min-width: 0; }
+  label.f { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+  label.chk { display: flex; align-items: center; gap: 8px; }
+  .muted { color: var(--muted); font-size: 12.5px; }
+  .mono { font-family: ui-monospace, monospace; }
+  .key { font: 12.5px/1.4 ui-monospace, monospace; word-break: break-all; user-select: all; background: #12141a; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+  .fp { font: 600 13px ui-monospace, monospace; letter-spacing: .5px; }
+  .msg { min-height: 20px; font-size: 13px; } .msg.bad { color: var(--bad); } .msg.ok { color: var(--ok); }
+  .badge { font-size: 11.5px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--muted); }
+  .badge.admin { border-color: var(--accent); color: var(--accent); }
+  .thispc { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-left: auto; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); } .dot.live { background: var(--accent); }
+  .lab { border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-top: 12px; }
+  .lab .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .lab .name { font-weight: 600; font-size: 15px; }
+  .pcs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 12px; }
+  .pcs button { text-align: left; padding: 10px 12px; }
+  .pcs button small { display: block; color: var(--muted); font-size: 11.5px; }
+  .pc { position: relative; display: grid; }
+  .pc .x { position: absolute; top: 4px; right: 4px; padding: 0 7px; font-size: 13px; line-height: 20px; border-color: transparent; background: transparent; color: var(--muted); }
+  .pc .x:hover { color: var(--bad); border-color: var(--bad); }
+  .recent { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; font-size: 13px; }
+  .chip { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .chip button { border: 0; border-radius: 0; padding: 3px 10px; font-size: 12.5px; background: #12141a; }
+  .chip button + button { border-left: 1px solid var(--line); color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid #262a33; vertical-align: middle; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .adminPanel { border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 4px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+  .pubrow { display: flex; gap: 10px; align-items: center; padding: 5px 0; border-bottom: 1px solid #262a33; font-size: 13px; }
+  .pubrow .n { width: 170px; flex: none; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+  .hidden { display: none !important; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  /* collapsible "Your access key" (needed once, when joining a lab) */
+  details.keyBox > summary { list-style: none; display: flex; align-items: center; gap: 10px; color: var(--text); font-size: 14px; }
+  details.keyBox > summary::-webkit-details-marker { display: none; }
+  details.keyBox > summary::before { content: '›'; color: var(--muted); font-size: 18px; line-height: 1; width: 10px; transition: transform .15s; }
+  details.keyBox[open] > summary::before { transform: rotate(90deg); }
+  details.keyBox > summary h2 { margin: 0; }
+  details.keyBox[open] > summary .keyHint { display: none; }
+  details.keyBox > .body { margin-top: 10px; }
+  /* this PC */
+  .hostTop { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .hostTop h2 { margin: 0 0 2px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .pcname { font: 600 13px ui-monospace, monospace; background: #12141a; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
+  .hostState { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; font-size: 13.5px; position: relative; }
+  .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
+  .switch .track { width: 46px; height: 26px; border-radius: 999px; background: #2a2e38; border: 1px solid var(--line); position: relative; transition: background .15s, border-color .15s; flex: none; }
+  .switch .track::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #9aa0ad; transition: transform .15s, background .15s; }
+  .switch input:checked + .track { background: var(--ok); border-color: var(--ok); }
+  .switch input:checked + .track::after { transform: translateX(20px); background: #fff; }
+  .switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .switch input:disabled + .track { opacity: .5; }
+  .switch.busy { cursor: progress; }
+  #hostMsg:empty, #labsMsg:empty { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>ScreenShare Remote</h1>
+    <span class="thispc hidden" id="thisPc"><span class="dot" id="tpDot"></span><span id="tpText"></span></span>
+  </header>
+
+  <section>
+    <details class="keyBox" id="keyBox">
+      <summary><h2>Your access key</h2><span class="muted keyHint" id="keyHint"></span></summary>
+      <div class="body">
+        <div class="muted">Send this to a lab admin to get access. It only identifies you; the secret half never leaves this computer.</div>
+        <div class="row">
+          <label class="f grow">Your name (shown to admins and on the lab PCs while you're connected)<input id="myName" maxlength="40"></label>
+          <button id="saveName">Save</button>
+        </div>
+        <div class="key" id="myKey">…</div>
+        <div class="row">
+          <button id="copyKey" class="primary">Copy access key</button>
+          <span class="muted">Fingerprint <span class="fp" id="myFp"></span> – read it out to the admin to double-check</span>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <section id="hostSec" class="hidden">
+    <div class="hostTop">
+      <div class="grow">
+        <h2>This PC as a lab PC <span class="pcname" id="hostPc"></span></h2>
+        <div class="hostState"><span class="dot" id="hostDot"></span><span id="hostState">Off</span></div>
+      </div>
+      <label class="switch" id="hostSwitch" title="Let the members of the lab below control this computer">
+        <input type="checkbox" role="switch" id="hostOn"><span class="track"></span><span>Reachable by lab members</span>
+      </label>
+    </div>
+    <div class="row">
+      <label class="f">Lab<select id="hostLab"></select></label>
+      <label class="chk" style="align-self:flex-end;padding-bottom:8px"><input type="checkbox" id="hostAuto" checked> Also after restarts (at login)</label>
+    </div>
+    <div class="msg" id="hostMsg"></div>
+  </section>
+
+  <section>
+    <div class="row" style="margin-top:0">
+      <h2 style="margin:0" class="grow">Labs</h2>
+      <button id="importBtn">Import lab file…</button>
+      <button id="createBtn">New lab…</button>
+    </div>
+    <div class="row hidden" id="createRow">
+      <label class="f grow">Name of the new lab (you'll be its first admin)<input id="newLabName" maxlength="60" placeholder="e.g. Physics teaching lab"></label>
+      <button id="createGo" class="primary">Create</button><button id="createCancel">Cancel</button>
+    </div>
+    <div class="msg" id="labsMsg"></div>
+    <div id="labs"></div>
+    <div class="muted" id="noLabs">No labs yet. Import the lab file an admin gave you, or create a new lab if you're setting one up.</div>
+  </section>
+
+</main>
+
+<template id="labTpl">
+  <div class="lab">
+    <div class="top">
+      <span class="name"></span><span class="badge role"></span><span class="muted ver"></span>
+      <span class="grow"></span>
+      <button class="small adminBtn hidden">Manage</button>
+      <button class="small exportBtn hidden" title="The file lab PCs are installed with and members import">Export lab file…</button>
+      <button class="small danger forgetBtn">Remove</button>
+    </div>
+    <div class="pcs"></div>
+    <div class="recent hidden"></div>
+    <div class="row">
+      <input class="pcName" placeholder="PC's computer name" style="width:200px" title="The lab PC's computer name (Windows: Settings › System › About; Linux: its hostname)">
+      <button class="connectBtn">Connect</button>
+      <button class="saveBtn" title="Keep this PC in your list (only on this computer)">Save</button>
+      <span class="msg connMsg"></span>
+    </div>
+    <div class="adminPanel hidden">
+      <h3>Members</h3>
+      <table><thead><tr><th>Name</th><th>Key fingerprint</th><th>Role</th><th></th></tr></thead><tbody class="members"></tbody></table>
+      <div class="row">
+        <input class="addName" placeholder="Name" style="width:160px" maxlength="40">
+        <input class="addKey grow" placeholder="Their access key (SSK1-…)">
+        <select class="addRole"><option value="member">Member</option><option value="admin">Admin</option></select>
+        <button class="addBtn">Add</button>
+      </div>
+      <h3>Lab PCs</h3>
+      <div class="muted">Their Windows computer names, one per line (as shown in Settings › System › About).</div>
+      <div class="row"><textarea class="pcList" rows="4"></textarea></div>
+      <div class="row"><button class="savePcs">Save PC list</button></div>
+      <h3>Rules on the lab PCs</h3>
+      <div class="grid2">
+        <label class="chk"><input type="checkbox" class="sBanner"> Show who is connected on the PC's screen</label>
+        <label class="chk"><input type="checkbox" class="sLocalEnd"> The person at the PC can end the session</label>
+        <label class="chk"><input type="checkbox" class="sConsent"> Ask the person at the PC first (when someone is signed in)</label>
+        <label class="chk"><input type="checkbox" class="sClip"> Clipboard sync</label>
+        <label class="chk"><input type="checkbox" class="sFiles"> File transfer</label>
+      </div>
+      <details class="netBox" style="margin-top:12px"><summary>Connection server and relay (optional, for a self-hosted server)</summary>
+        <div class="muted" style="margin:8px 0">Empty = the free public PeerJS server and relay. If you run your own (see the admin guide), every member and PC switches to it after receiving this version.</div>
+        <div class="grid2">
+          <label class="f">Server host<input class="nHost" placeholder="peer.example.org"></label>
+          <label class="f">Port<input class="nPort" placeholder="443"></label>
+          <label class="f">Path<input class="nPath" placeholder="/"></label>
+          <label class="f">Key<input class="nKey" placeholder="peerjs"></label>
+          <label class="chk"><input type="checkbox" class="nSecure" checked> HTTPS (secure)</label>
+        </div>
+        <div class="grid2" style="margin-top:10px">
+          <label class="f">TURN relay URLs<input class="tUrls" placeholder="turn:turn.example.org:3478"></label>
+          <label class="f">TURN user<input class="tUser"></label>
+          <label class="f">TURN password<input class="tPass" type="password"></label>
+        </div>
+      </details>
+      <div class="row"><button class="saveRules">Save rules</button></div>
+      <h3>Rename</h3>
+      <div class="row"><input class="labName" maxlength="60" style="width:280px"><button class="rename">Rename lab</button></div>
+      <h3>Send the latest version to the lab PCs</h3>
+      <div class="muted">Every change makes a new signed version. PCs also get it from any member who has it when they connect, but sending it now makes removals take effect right away.</div>
+      <div class="row"><button class="publishBtn primary">Send to all lab PCs</button><span class="muted pubSummary"></span></div>
+      <div class="pubList"></div>
+      <div class="msg adminMsg"></div>
+    </div>
+  </div>
+</template>
+
+<script>
+'use strict';
+const R = window.remoteApp;
+const $ = id => document.getElementById(id);
+const clean = e => String(e && e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+const slug = s => String(s || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'pc';
+let me = null, labs = [], openAdmin = new Set(), thisPc = null;
+const pubState = {};       // labId -> { pc: { state, text, hostKey } }
+
+function msg(el, text, kind = '') { el.textContent = text; el.className = el.className.replace(/\b(ok|bad)\b/g, '').trim() + (kind ? ' ' + kind : ''); }
+
+/* ---------------- my key ---------------- */
+async function loadMe() {
+  me = await R.labMe();
+  $('myName').value = me.name; $('myKey').textContent = me.accessKey; $('myFp').textContent = me.fp;
+  $('keyHint').textContent = `${me.name} · ${me.fp}`;
+}
+$('saveName').onclick = async () => { me = await R.labSetName($('myName').value); $('myName').value = me.name; $('keyHint').textContent = `${me.name} · ${me.fp}`; };
+$('copyKey').onclick = async () => {
+  await navigator.clipboard.writeText(`${me.name}: ${me.accessKey}`).catch(() => {});
+  $('copyKey').textContent = 'Copied'; setTimeout(() => ($('copyKey').textContent = 'Copy access key'), 1500);
+};
+
+/* ---------------- this PC (when it is a lab PC) ---------------- */
+async function loadThisPc() {
+  thisPc = await R.labThisPc();
+  const el = $('thisPc');
+  if (!thisPc || !thisPc.pc) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  const st = { online: ['ok', 'reachable'], connected: ['live', `in use by ${thisPc.peer || 'someone'}`], starting: ['warn', 'connecting…'],
+               error: ['bad', thisPc.message || 'error'], 'not-set-up': ['warn', 'installed, not set up for a lab yet'], off: ['bad', 'off'] }[thisPc.state] || ['', thisPc.state];
+  // a status file not refreshed for a long time means the background service isn't running
+  const stale = Date.now() - Date.parse(thisPc.updated || 0) > 15 * 60 * 1000 && thisPc.state !== 'online' && thisPc.state !== 'connected';
+  $('tpDot').className = 'dot ' + (stale ? 'bad' : st[0]);
+  const latest = labs.find(v => v.labId === thisPc.labId);
+  const behind = latest && thisPc.version && latest.version > thisPc.version ? `, the lab is at v${latest.version}: Send to all lab PCs` : '';
+  $('tpText').textContent = `This PC: ${thisPc.pc}${thisPc.lab ? ` in ${thisPc.lab} (v${thisPc.version}${behind})` : ''} – ${stale ? 'service not running?' : st[1]}`;
+  if (hostInfo && hostInfo.canHost && labs.some(v => v.myRole)) { el.classList.add('hidden'); renderHostState(); }   // Linux: shown in "This PC as a lab PC"
+}
+setInterval(loadThisPc, 10000);
+
+/* ---------------- labs ---------------- */
+$('importBtn').onclick = async () => {
+  try { const v = await R.labImportFile(); if (v) { msg($('labsMsg'), `Added "${v.lab}" (version ${v.version}).`, 'ok'); await loadLabs(); } }
+  catch (e) { msg($('labsMsg'), clean(e), 'bad'); }
+};
+$('createBtn').onclick = () => { $('createRow').classList.remove('hidden'); $('newLabName').focus(); };
+$('createCancel').onclick = () => $('createRow').classList.add('hidden');
+$('createGo').onclick = async () => {
+  const name = $('newLabName').value.trim();
+  if (!name) return;
+  try {
+    const v = await R.labCreate(name);
+    $('createRow').classList.add('hidden'); $('newLabName').value = '';
+    openAdmin.add(v.labId);
+    msg($('labsMsg'), `Created "${v.lab}". Add members and PCs below, then export the lab file for the installer.`, 'ok');
+    await loadLabs();
+  } catch (e) { msg($('labsMsg'), clean(e), 'bad'); }
+};
+
+async function loadLabs() {
+  labs = await R.labList();
+  $('noLabs').classList.toggle('hidden', labs.length > 0);
+  $('labs').replaceChildren(...labs.map(renderLab));
+  loadHost();
+}
+
+function renderLab(v) {
+  const el = $('labTpl').content.firstElementChild.cloneNode(true);
+  const q = c => el.querySelector('.' + c);
+  const admin = v.myRole === 'admin';
+  q('name').textContent = v.lab;
+  q('role').textContent = v.myRole || 'not a member';
+  q('role').classList.toggle('admin', admin);
+  q('ver').textContent = `version ${v.version}`;
+  q('adminBtn').classList.toggle('hidden', !admin);
+  q('exportBtn').classList.toggle('hidden', !admin);
+
+  el.dataset.lab = v.labId; el.dataset.version = v.version;
+  renderPcs(el, v);
+  if (!v.myRole) msg(q('connMsg'), 'Your key is not in this version of the lab.', 'bad');
+  q('connectBtn').onclick = () => connect(v, q('pcName').value, q('connMsg'));
+  q('saveBtn').onclick = async () => {
+    const pc = q('pcName').value.trim();
+    if (!pc) { msg(q('connMsg'), 'Type the PC\'s computer name first', 'bad'); return; }
+    renderPcs(el, await R.labSavePc(v.labId, pc, true)); q('pcName').value = '';
+    msg(q('connMsg'), `Saved ${pc}`, 'ok'); setTimeout(() => msg(q('connMsg'), ''), 2500);
+  };
+  q('pcName').onkeydown = e => { if (e.key === 'Enter') connect(v, q('pcName').value, q('connMsg')); };
+  q('forgetBtn').onclick = async () => {
+    if (q('forgetBtn').dataset.sure !== '1') { q('forgetBtn').dataset.sure = '1'; q('forgetBtn').textContent = 'Click again to remove'; return; }
+    await R.labForget(v.labId); await loadLabs();
+  };
+  q('exportBtn').onclick = async () => {
+    try { const f = await R.labExportFile(v.labId); if (f) msg(q('connMsg'), `Saved ${f}`, 'ok'); } catch (e) { msg(q('connMsg'), clean(e), 'bad'); }
+  };
+  q('adminBtn').onclick = () => { openAdmin.has(v.labId) ? openAdmin.delete(v.labId) : openAdmin.add(v.labId); q('adminPanel').classList.toggle('hidden'); };
+  if (admin) fillAdmin(el, v);
+  q('adminPanel').classList.toggle('hidden', !(admin && openAdmin.has(v.labId)));
+  return el;
+}
+
+const ago = iso => {
+  const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+};
+// The lab's PCs, plus my saved ones (shortcuts on this computer only), plus recently used PCs that are in neither.
+function renderPcs(el, v) {
+  const q = c => el.querySelector('.' + c);
+  const out = q('connMsg');
+  const last = pc => v.recent.find(r => slug(r.pc) === slug(pc));
+  const listed = new Set(v.pcs.map(slug));
+  const saved = v.saved.filter(pc => !listed.has(slug(pc)));
+  const savedSet = new Set(saved.map(slug));
+  const button = (pc, isSaved) => {
+    const wrap = document.createElement('div'); wrap.className = 'pc';
+    const b = document.createElement('button');
+    b.textContent = pc;
+    const sub = document.createElement('small');
+    const r = last(pc);
+    sub.textContent = [isSaved ? 'saved' : '', r ? 'used ' + ago(r.at) : ''].filter(Boolean).join(' · ');
+    if (thisPc && thisPc.pc && slug(thisPc.pc) === slug(pc) && thisPc.labId === v.labId) { sub.textContent = 'this PC'; b.disabled = true; }
+    if (sub.textContent) b.append(sub);
+    b.onclick = () => connect(v, pc, out);
+    wrap.append(b);
+    if (isSaved) {
+      const x = document.createElement('button'); x.className = 'x'; x.textContent = '×'; x.title = 'Remove from your saved PCs';
+      x.onclick = async () => renderPcs(el, await R.labSavePc(v.labId, pc, false));
+      wrap.append(x);
+    }
+    return wrap;
+  };
+  q('pcs').replaceChildren(...v.pcs.map(pc => button(pc, false)), ...saved.map(pc => button(pc, true)));
+  if (!v.pcs.length && !saved.length) {
+    const hint = document.createElement('div'); hint.className = 'muted';
+    hint.textContent = v.myRole === 'admin' ? 'No lab PCs yet: add their computer names in Manage › Lab PCs. Each one also needs ScreenShare Remote set up as a lab PC (Windows: the installer with the lab file; Linux: “This PC as a lab PC” below).'
+                                            : 'No lab PCs listed yet. You can still type a PC\'s computer name below.';
+    q('pcs').append(hint);
+  }
+  // recently used PCs that aren't listed or saved: one click to reconnect or keep
+  const recent = v.recent.filter(r => !listed.has(slug(r.pc)) && !savedSet.has(slug(r.pc))).slice(0, 6);
+  q('recent').classList.toggle('hidden', !recent.length);
+  const label = document.createElement('span'); label.className = 'muted'; label.textContent = 'Recent:';
+  q('recent').replaceChildren(label, ...recent.map(r => {
+    const chip = document.createElement('span'); chip.className = 'chip';
+    const go = document.createElement('button'); go.textContent = `${r.pc} · ${ago(r.at)}`; go.title = 'Connect'; go.onclick = () => connect(v, r.pc, out);
+    const keep = document.createElement('button'); keep.textContent = 'Save'; keep.title = 'Keep it in your list';
+    keep.onclick = async () => renderPcs(el, await R.labSavePc(v.labId, r.pc, true));
+    chip.append(go, keep);
+    return chip;
+  }));
+}
+// after a connection (history) or a newer lab version arrived from a PC
+R.onLabChanged(async () => {
+  const fresh = await R.labList();
+  if (fresh.length !== labs.length || fresh.some(v => { const el = document.querySelector(`.lab[data-lab="${v.labId}"]`); return !el || +el.dataset.version !== v.version; })) return loadLabs();
+  labs = fresh;
+  for (const v of labs) renderPcs(document.querySelector(`.lab[data-lab="${v.labId}"]`), v);
+});
+
+async function connect(v, pc, out) {
+  pc = String(pc || '').trim();
+  if (!pc) { msg(out, 'Enter the PC name', 'bad'); return; }
+  try { await R.labConnect(v.labId, pc); msg(out, `Opening ${pc}…`, 'ok'); setTimeout(() => msg(out, ''), 3000); }
+  catch (e) { msg(out, clean(e), 'bad'); }
+}
+
+/* ---------------- admin ---------------- */
+function fillAdmin(el, v) {
+  const q = c => el.querySelector('.' + c);
+  const am = q('adminMsg');
+  const apply = async (changes, done) => {
+    try { await R.labUpdate(v.labId, changes); await loadLabs(); const nv = labs.find(x => x.labId === v.labId);
+          const m = document.querySelector(`[data-lab="${v.labId}"] .adminMsg`); if (m) msg(m, done + ` Now version ${nv.version}: send it to the lab PCs.`, 'ok'); }
+    catch (e) { msg(am, clean(e), 'bad'); }
+  };
+  el.dataset.lab = v.labId;
+  // members
+  q('members').replaceChildren(...v.members.map(m => {
+    const tr = document.createElement('tr');
+    const role = document.createElement('select');
+    role.innerHTML = '<option value="member">Member</option><option value="admin">Admin</option>';
+    role.value = m.role;
+    role.onchange = () => apply({ setRole: { key: m.key, role: role.value } }, `${m.name} is now ${role.value === 'admin' ? 'an admin' : 'a member'}.`);
+    const rm = document.createElement('button');
+    rm.className = 'small danger'; rm.textContent = 'Remove';
+    rm.onclick = () => {
+      if (rm.dataset.sure !== '1') { rm.dataset.sure = '1'; rm.textContent = m.me ? 'Remove yourself?' : 'Sure?'; return; }
+      apply({ removeMember: m.key }, `${m.name} was removed.`);
+    };
+    const td = (x, cls) => { const c = document.createElement('td'); if (cls) c.className = cls; c.append(x); return c; };
+    tr.append(td(m.name + (m.me ? ' (you)' : '')), td(m.fp, 'mono'), td(role), td(rm));
+    return tr;
+  }));
+  q('addBtn').onclick = () => {
+    let key = q('addKey').value, name = q('addName').value.trim();
+    // pasted as "Name: SSK1-…" (what Copy access key gives)
+    const mm = key.match(/^\s*(.+?):\s*(SSK1-\S+)\s*$/);
+    if (mm) { if (!name) name = mm[1]; key = mm[2]; }
+    apply({ addMember: { name, key, role: q('addRole').value } }, `${name || 'The new member'} was added.`);
+  };
+  // PCs
+  q('pcList').value = v.pcs.join('\n');
+  q('savePcs').onclick = () => apply({ pcs: q('pcList').value.split(/[\n,;]+/) }, 'PC list saved.');
+  // rules
+  const s = v.settings;
+  q('sBanner').checked = s.banner !== false; q('sLocalEnd').checked = s.localEnd !== false; q('sConsent').checked = s.consent === 'ask';
+  q('sClip').checked = s.clipboard !== false; q('sFiles').checked = s.files !== false;
+  const sv = s.server || {}, tv = s.turn || {};
+  q('nHost').value = sv.host || ''; q('nPort').value = sv.port || ''; q('nPath').value = sv.path || ''; q('nKey').value = sv.key || ''; q('nSecure').checked = sv.secure !== false;
+  q('tUrls').value = tv.urls || ''; q('tUser').value = tv.username || ''; q('tPass').value = tv.credential || '';
+  if (sv.host || tv.urls) q('netBox').open = true;
+  q('saveRules').onclick = () => {
+    const host = q('nHost').value.trim(), urls = q('tUrls').value.trim();
+    apply({ settings: {
+      banner: q('sBanner').checked, localEnd: q('sLocalEnd').checked, consent: q('sConsent').checked ? 'ask' : 'never',
+      clipboard: q('sClip').checked, files: q('sFiles').checked,
+      server: host ? { host, port: +q('nPort').value || (q('nSecure').checked ? 443 : 80), path: q('nPath').value.trim() || '/', key: q('nKey').value.trim() || 'peerjs', secure: q('nSecure').checked } : null,
+      turn: urls ? { urls, username: q('tUser').value, credential: q('tPass').value } : null,
+    } }, 'Rules saved.');
+  };
+  q('labName').value = v.lab;
+  q('rename').onclick = () => apply({ lab: q('labName').value }, 'Renamed.');
+  // publish
+  renderPublish(el, v);
+  q('publishBtn').onclick = () => publishAll(el, v);
+}
+
+function renderPublish(el, v) {
+  const st = pubState[v.labId] || {};
+  const rows = v.pcs.map(pc => {
+    const row = document.createElement('div'); row.className = 'pubrow';
+    const n = document.createElement('span'); n.className = 'n'; n.textContent = pc;
+    const dot = document.createElement('span');
+    const t = document.createElement('span'); t.className = 'grow';
+    const have = v.publish[slug(pc)];
+    const s = st[pc];
+    if (s) { dot.className = 'dot ' + ({ ok: 'ok', busy: 'warn', off: '', bad: 'bad', changed: 'bad' }[s.state] || ''); t.textContent = s.text; }
+    else if (have === v.version) { dot.className = 'dot ok'; t.textContent = `Has version ${have}`; }
+    else { dot.className = 'dot warn'; t.textContent = have ? `Has version ${have}, needs ${v.version}` : 'Not sent yet'; }
+    row.append(dot, n, t);
+    if (s && s.state === 'changed') {
+      const b = document.createElement('button'); b.className = 'small'; b.textContent = 'Trust new identity';
+      b.title = 'Only if this PC was reinstalled: otherwise something else may be pretending to be it';
+      b.onclick = async () => { await R.labTrustHost(v.labId, pc, s.hostKey); publishOne(el, v, pc); };
+      row.append(b);
+    }
+    return row;
+  });
+  el.querySelector('.pubList').replaceChildren(...rows);
+  const done = v.pcs.filter(pc => v.publish[slug(pc)] === v.version).length;
+  el.querySelector('.pubSummary').textContent = v.pcs.length ? `${done} of ${v.pcs.length} PCs have version ${v.version}` : 'Add the lab PCs first';
+}
+
+function setPub(el, v, pc, state, text, hostKey) {
+  (pubState[v.labId] = pubState[v.labId] || {})[pc] = { state, text, hostKey };
+  renderPublish(el, v);
+}
+
+async function publishAll(el, v) {
+  const btn = el.querySelector('.publishBtn');
+  btn.disabled = true;
+  pubState[v.labId] = {};
+  const queue = [...v.pcs];
+  const worker = async () => { while (queue.length) await publishOne(el, v, queue.shift()); };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  btn.disabled = false;
+  await loadLabs();
+}
+
+// Deliver the latest policy to one lab PC: it accepts it only if an admin of its current version signed it.
+async function publishOne(el, v, pc) {
+  setPub(el, v, pc, 'busy', 'Connecting…');
+  const t = await R.labTarget(v.labId, pc);
+  const r = await publishVia(el, v, pc, t, { server: t.settings.server, turn: t.settings.turn });
+  // after a change of connection server, PCs without the new version are still on the previous one
+  if (r === 'off' && v.prevNet && JSON.stringify(v.prevNet) !== JSON.stringify({ server: t.settings.server, turn: t.settings.turn })) {
+    setPub(el, v, pc, 'busy', 'Trying the previous connection server…');
+    return publishVia(el, v, pc, t, v.prevNet);
+  }
+  return r;
+}
+function publishVia(el, v, pc, t, net) {
+  window.__net = net;
+  return new Promise(resolve => {
+    const peer = new Peer(peerOptions());
+    let done = false;
+    const finish = async (state, text, hostKey) => {
+      if (done) return; done = true; clearTimeout(timer);
+      setPub(el, v, pc, state, text, hostKey);
+      setTimeout(() => { try { peer.destroy(); } catch {} }, 600);
+      resolve(state);
+    };
+    const timer = setTimeout(() => finish('off', 'No answer (turned off, offline, or not installed yet)'), 25000);
+    peer.on('error', e => finish('off', e.type === 'peer-unavailable' ? 'Not reachable (turned off, offline, or not installed yet)' : 'Connection problem: ' + (e.message || e.type)));
+    peer.on('open', () => {
+      const c = peer.connect(t.peerId, { label: 'ctl', serialization: 'binary', reliable: true });
+      c.on('data', async m => {
+        if (!m || typeof m !== 'object') return;
+        if (m.t === 'hello') {
+          if (m.mode !== 'lab' || m.labId !== v.labId) return finish('bad', 'That PC belongs to another lab');
+          if ((m.version || 0) >= v.version) {          // it already has this one (or newer)
+            const chk = await labSignIn(c, m, { labId: v.labId, pc, me: me.name }, 'publish');   // still verifies its identity
+            if (!chk.ok) return finish(chk.changed ? 'changed' : 'bad', chk.reason, m.hostKey);
+            return;
+          }
+          setPub(el, v, pc, 'busy', `Has version ${m.version}, sending ${v.version}…`);
+          const r = await labSignIn(c, m, { labId: v.labId, pc, me: me.name }, 'publish');
+          if (!r.ok) finish(r.changed ? 'changed' : 'bad', r.reason, m.hostKey);
+        } else if (m.t === 'policy-ok') {
+          await R.labSetPublished(v.labId, pc, m.version);
+          const nv = (await R.labList()).find(x => x.labId === v.labId); if (nv) v.publish = nv.publish;
+          finish('ok', m.version >= v.version ? `Has version ${m.version}` : `Kept version ${m.version}`);
+        } else if (m.t === 'denied') finish('bad', m.reason || 'Refused');
+      });
+      c.on('error', () => {});
+    });
+  });
+}
+
+/* ---------------- this PC as a lab PC (Linux; Windows uses the installer) ---------------- */
+let hostInfo = null, hostBusy = false;
+async function loadHost() {
+  const h = hostInfo = await R.labHostInfo();
+  $('hostSec').classList.toggle('hidden', !h.canHost || !labs.some(v => v.myRole));
+  if (!h.canHost) return;
+  if (labs.some(v => v.myRole)) $('thisPc').classList.add('hidden');      // shown in "This PC as a lab PC" instead
+  $('hostPc').textContent = h.pc;
+  const sel = $('hostLab'), keep = h.labId || sel.value;
+  sel.replaceChildren(...labs.filter(v => v.myRole).map(v => { const o = document.createElement('option'); o.value = v.labId; o.textContent = v.lab; return o; }));
+  if (keep && labs.some(v => v.labId === keep)) sel.value = keep;
+  if (h.running) $('hostAuto').checked = h.autostart;
+  if (!hostBusy) $('hostOn').checked = h.running;
+  renderHostState();
+}
+function renderHostState() {
+  if (!hostInfo || !hostInfo.canHost) return;
+  const t = thisPc, on = hostInfo.running;
+  let dot = '', text = 'Off: lab members can\'t connect to this PC';
+  if (hostBusy) { dot = 'warn'; text = $('hostOn').checked ? 'Starting…' : 'Stopping…'; }
+  else if (on && t && t.pc) {
+    const latest = labs.find(v => v.labId === t.labId);
+    const ver = latest && latest.version > (t.version || 0) ? ` · updating to v${latest.version}…` : ` · v${t.version}`;
+    if (t.state === 'connected') { dot = 'live'; text = `In use by ${t.peer || 'someone'} · ${t.lab}${ver}`; }
+    else if (t.state === 'online') { dot = 'ok'; text = `Reachable · ${t.lab}${ver}`; }
+    else if (t.state === 'error') { dot = 'bad'; text = t.message || 'Error'; }
+    else { dot = 'warn'; text = 'Starting…'; }
+  } else if (on) { dot = 'warn'; text = 'Starting…'; }
+  $('hostDot').className = 'dot ' + dot;
+  $('hostState').textContent = text;
+}
+async function hostStart() {
+  const r = await R.labHostStart($('hostLab').value, $('hostAuto').checked);
+  msg($('hostMsg'), r.added ? `"${r.pc}" was added to the lab's PC list (version ${r.version}).`
+    : r.listed ? '' : `Members can type "${r.pc}" to connect. Ask a lab admin to add it to the lab's PC list so it shows up for everyone.`, 'ok');
+}
+async function hostApply(fn) {
+  hostBusy = true; $('hostSwitch').classList.add('busy'); $('hostOn').disabled = true; renderHostState();
+  try { await fn(); } catch (e) { msg($('hostMsg'), clean(e), 'bad'); }
+  await loadLabs();
+  // give the agent a moment to come online (or go away) before showing its state
+  for (let i = 0; i < 20; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    await loadThisPc(); hostInfo = await R.labHostInfo();
+    if ($('hostOn').checked ? thisPc && thisPc.state === 'online' && hostInfo.running : !hostInfo.running) break;
+  }
+  hostBusy = false; $('hostSwitch').classList.remove('busy'); $('hostOn').disabled = false;
+  await loadLabs();                          // (also marks "this PC" among the lab's PCs)
+}
+$('hostOn').onchange = () => {
+  const on = $('hostOn').checked;
+  if (on && !$('hostLab').value) { $('hostOn').checked = false; return; }
+  hostApply(on ? hostStart : async () => { await R.labHostStop(); msg($('hostMsg'), ''); });
+};
+// changing the lab while it's on: start it again for the new lab; "at login" just updates the login entry
+$('hostLab').onchange = () => { if (hostInfo && hostInfo.running) hostApply(hostStart); };
+$('hostAuto').onchange = () => { if (hostInfo && hostInfo.running) R.labHostAutostart($('hostAuto').checked); };
+
+(async () => {
+  await loadMe();
+  await loadThisPc();
+  await loadLabs();
+  if (!labs.length) $('keyBox').open = true;     // first run: joining a lab starts with the key
+})();
+</script>
+</body>
+</html>
