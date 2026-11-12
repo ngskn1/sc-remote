@@ -4,8 +4,8 @@ This is the same screen sharing as `screenshare.html`, plus **game audio without
 
 | File | Platform | How to run |
 |---|---|---|
-| `ScreenShare-2.4.0-portable.exe` | Windows 10/11 x64 | Double-click it. Nothing is installed. |
-| `ScreenShare-2.4.0.AppImage` | Linux x64 | Run `chmod +x ScreenShare-2.4.0.AppImage`, then `./ScreenShare-2.4.0.AppImage` |
+| `ScreenShare-2.5.0-portable.exe` | Windows 10/11 x64 | Double-click it. Nothing is installed. |
+| `ScreenShare-2.5.0.AppImage` | Linux x64 | Run `chmod +x ScreenShare-2.5.0.AppImage`, then `./ScreenShare-2.5.0.AppImage` |
 
 Everything in the browser version works here too: a fixed room code, saved friends, wait-for-host and auto-rejoin, and changing any setting, the audio source or the shared window while live. See `README.md` next to `screenshare.html`.
 
@@ -13,7 +13,9 @@ Everything in the browser version works here too: a fixed room code, saved frien
 
 Settings are saved in a `ScreenShare-data` folder next to the executable. Keep the two together on a USB stick and your settings travel with them.
 
-**New in 2.4.0:** the password check now works both ways. The PC you connect to must prove that it knows the password too, before it receives a single key press, so something that took its ID on the connection server while it was off is found out. Because of that, 2.4.0 (and SC-Remote 1.3.1) only connect to PCs running 2.4.0 / SC-Remote 1.3.1 or newer; update both ends. **This computer** also has a **Connection history**: who connected, from which address and for how long, and who tried with a wrong password.
+**New in 2.5.0:** a new sign-in for remote desktop (SRP, a password-authenticated key exchange). Neither a stranger who connects to your PC nor something posing as the PC you connect to gets anything it could use to test password guesses on its own computer: each try needs a new connection, and the lockout limits those. 2.5.0 (and SC-Remote 1.4.0) only connect to PCs running 2.5.0 / SC-Remote 1.4.0 or newer, so update the PCs you connect to first; older apps can still connect to an updated PC.
+
+**2.4.0:** the PC you connect to must prove that it knows the password too, before it receives a single key press. **This computer** has a **Connection history**: who connected, from which address and for how long, and who tried with a wrong password.
 
 **2.3.1:** a saved PC keeps the password that actually worked. A mistyped one is no longer saved, and retyping a changed password updates the saved one. The Files panel reopens in the folder you last used on that PC.
 
@@ -137,7 +139,7 @@ The session window:
 
 **Windows** shows a "Windows protected your PC" warning because the exe isn't code-signed. Click **More info → Run anyway**. A portable exe unpacks itself on every start, so it takes a few seconds to open.
 
-**Linux:** AppImages need FUSE 2. On Debian 12, run `sudo apt install libfuse2`. Without it, run the app with `./ScreenShare-2.4.0.AppImage --appimage-extract-and-run`.
+**Linux:** AppImages need FUSE 2. On Debian 12, run `sudo apt install libfuse2`. Without it, run the app with `./ScreenShare-2.5.0.AppImage --appimage-extract-and-run`.
 
 ## Build from source
 
@@ -173,8 +175,8 @@ Releases are built and published by GitHub Actions (`.github/workflows/release-s
 
 To release a new version:
 
-1. Raise `"version"` in `build/sc-remote/release.json` (e.g. `1.3.0` → `1.3.1`) and commit.
-2. Push a matching tag: `git tag v1.3.1 && git push origin main v1.3.1`. Or, in the repository's **Actions** tab, run **SC-Remote release**.
+1. Raise `"version"` in `build/sc-remote/release.json` (e.g. `1.4.0` → `1.4.1`) and commit.
+2. Push a matching tag: `git tag v1.4.1 && git push origin main v1.4.1`. Or, in the repository's **Actions** tab, run **SC-Remote release**.
 3. After about 10 minutes the release appears under **Releases**. PCs show the update the next time SC-Remote starts, or within 12 hours if it's already running.
 
 Optional release notes: set the repository variable `SC_REMOTE_RELEASE_NOTES` (Settings › Secrets and variables › Actions › Variables) before releasing.

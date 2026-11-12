@@ -54,12 +54,17 @@ function onControl(conn) {
   let counted = true;
   const settled = () => { if (counted) { counted = false; waiting--; } };
   const nonce = randomHex(32);
-  let authed = false, checking = false;
+  let authed = false, checking = false, pake = null;
   const timeout = setTimeout(() => { if (!authed) { settled(); conn.close(); } }, 20000);
   conn.on('open', async () => {
     // caps.bound: sign-ins are tied to this connection; caps.proof: this PC proves it knows the password too;
-    // caps.sas: real Ctrl+Alt+Del (the agent on Windows)
-    if (cfg.mode !== 'lab') { conn.send({ t: 'hello', v: 4, salt: cfg.salt, nonce, name: cfg.name, os: cfg.os, caps: { bound: true, proof: true, sas: !!cfg.agent } }); return; }
+    // caps.pake + pake: this PC's half of the SRP sign-in (see remote/srp.js); caps.sas: real Ctrl+Alt+Del
+    // (the agent on Windows)
+    if (cfg.mode !== 'lab') {
+      pake = await R.pakeStart();
+      conn.send({ t: 'hello', v: 5, salt: cfg.salt, nonce, name: cfg.name, os: cfg.os, caps: { bound: true, proof: true, pake: !!pake, sas: !!cfg.agent }, ...(pake ? { pake: pake.B } : {}) });
+      return;
+    }
     // lab: prove this PC's identity, bound to this exact encrypted connection
     const [hostFp, clientFp] = dtlsFingerprints(conn);
     const sig = await R.hostSignHello(nonce, hostFp, clientFp);
@@ -79,8 +84,9 @@ function onControl(conn) {
         if (r.ok && msg.purpose === 'publish') { conn.send({ t: 'policy-ok', version: r.version }); setTimeout(() => conn.close(), 500); return; }
       } else {
         const [hostFp, clientFp] = dtlsFingerprints(conn);      // computed here, never taken from the other side
+        const answer = pake && msg.pake && typeof msg.pake === 'object' ? { id: pake.id, A: msg.pake.A, m1: msg.pake.m1 } : null;
         r = await R.verify(nonce, String(msg.mac || ''), name, msg.bound && hostFp && clientFp ? { hostFp, clientFp } : null,
-                           { cnonce: typeof msg.cnonce === 'string' ? msg.cnonce : '', ...(await remoteAddress(conn)) });
+                           { cnonce: typeof msg.cnonce === 'string' ? msg.cnonce : '', ...(answer ? { pake: answer } : {}), ...(await remoteAddress(conn)) });
       }
       settled();
       if (!r.ok) { conn.send({ t: 'denied', reason: r.reason }); setTimeout(() => conn.close(), 500); return; }

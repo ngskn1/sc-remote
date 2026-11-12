@@ -1,7 +1,6 @@
 // Shared by the remote host engine and the remote session window.
 'use strict';
 const REMOTE_PREFIX = 'rdesk-';          // remote-desktop peers live in their own namespace on the signaling server
-const PBKDF2_ROUNDS = 150000;            // must match remote/host-main.js
 const CHUNK = 256 * 1024;
 
 function peerOptions() {
@@ -54,28 +53,6 @@ async function labSignIn(conn, hello, creds, purpose, extra = {}) {
 const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 const unhex = h => new Uint8Array(h.match(/../g).map(x => parseInt(x, 16)));
 const randomHex = n => hex(crypto.getRandomValues(new Uint8Array(n)));
-
-// Client side of the password check: derive the same key the host stored, then sign the host's nonce.
-// bound: also sign both ends' DTLS fingerprints ("nonce|host|client"), tying the check to this encrypted connection
-async function signNonce(password, saltHex, nonceHex, bound = null) {
-  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: unhex(saltHex), iterations: PBKDF2_ROUNDS }, base, 256);
-  const key = await crypto.subtle.importKey('raw', bits, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const data = bound ? new TextEncoder().encode(`${nonceHex}|${bound.hostFp}|${bound.clientFp}`) : unhex(nonceHex);
-  return hex(await crypto.subtle.sign('HMAC', key, data));
-}
-
-// Both halves of a sign-in on the client: "mac" proves to the host that we know the password; "proof" is what
-// the host must answer to prove that it knows it too (so an impostor that took the PC's ID is found out before
-// it sees a single key press). cnonce: our own random number, so an old answer can't be replayed.
-async function passwordProofs(password, saltHex, nonceHex, bound, cnonceHex) {
-  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: unhex(saltHex), iterations: PBKDF2_ROUNDS }, base, 256);
-  const key = await crypto.subtle.importKey('raw', bits, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const sign = async text => hex(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(text)));
-  const tail = `${nonceHex}|${bound.hostFp}|${bound.clientFp}`;
-  return { mac: await sign(tail), proof: await sign(`host|${cnonceHex}|${tail}`) };
-}
 
 // Where a connection really comes from: the address of the path it uses (relay: through a relay server)
 async function remoteAddress(conn) {

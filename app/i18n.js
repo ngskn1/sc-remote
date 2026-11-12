@@ -171,8 +171,8 @@
     '{0} is controlling this PC': '{0} está controlando este PC',
     '{0} is connected with {1}': '{0} está conectado pelo {1}',
     // sign-in: the PC must prove it knows the password too
-    "That PC runs an older version, which can't prove that it really is that PC. Update it first (SC-Remote 1.3.1 / ScreenShare 2.4 or newer).":
-      'Esse PC usa uma versão antiga, que não consegue provar que é ele mesmo. Atualize-o primeiro (SC-Remote 1.3.1 / ScreenShare 2.4 ou mais novo).',
+    "That PC runs an older version, without the current sign-in. Update it first (SC-Remote 1.4 / ScreenShare 2.5 or newer).":
+      'Esse PC usa uma versão antiga, sem a forma atual de entrada. Atualize-o primeiro (SC-Remote 1.4 / ScreenShare 2.5 ou mais novo).',
     "That computer accepted the sign-in but could not prove that it knows the password, so it may not be the real PC. Nothing was sent to it. If this keeps happening, change that PC's password.":
       'Esse computador aceitou a entrada, mas não conseguiu provar que conhece a senha; pode não ser o PC verdadeiro. Nada foi enviado a ele. Se isso continuar acontecendo, troque a senha desse PC.',
     "Could not read the connection's security details.": 'Não foi possível ler os detalhes de segurança da conexão.',

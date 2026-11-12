@@ -12,7 +12,7 @@ const path = require('path');
 const { Injector } = require('./injector');
 const clipFiles = require('./clipfiles');
 
-const PBKDF2_ROUNDS = 150000;          // must match the client (app/remote-common.js)
+const PBKDF2_ROUNDS = 150000;          // (both ends of a sign-in derive the key here)
 
 module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDir, serverQuery, openMainWindow, log = console.log, lab = {},
                                          product = 'ScreenShare', feedbackUrl = null, defaultLang = 'en', trayApp = false, update = null }) {
@@ -80,15 +80,41 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   // cnonce: the client's own random number. With it, a right password is answered with a proof that this PC
   // knows the password too ("host|cnonce|nonce|host|client"), so the client can tell this PC from an impostor
   // that took its ID on the connection server while it was off.
-  function verify(nonceHex, macHex, bind, cnonceHex) {
-    if (Date.now() < lockedUntil) return { ok: false, code: 'locked', reason: `Too many wrong passwords. Try again in ${Math.ceil((lockedUntil - Date.now()) / 1000)} s.` };
+  // The sign-in is SRP (see srp.js): this PC's half goes out in its hello, and the app's answer comes back
+  // with its proof. Each connection gets its own half and one try.
+  const srp = require('./srp');
+  const pakes = new Map();          // id → { b, B, key, at }: this PC's half, until the app answers
+  function pakeStart() {
     const { key } = cfg();
-    if (!key || !/^[0-9a-f]{64}$/.test(nonceHex) || !/^[0-9a-f]{64}$/.test(macHex || '')) return { ok: false, code: 'bad', reason: 'Bad request' };
+    if (!key || !/^[0-9a-f]{64}$/.test(key)) return null;
+    const now = Date.now();
+    for (const [id, p] of pakes) if (now - p.at > 60000) pakes.delete(id);
+    if (pakes.size >= 32) pakes.delete(pakes.keys().next().value);
+    const id = crypto.randomBytes(8).toString('hex');
+    const { b, B } = srp.hostStart(key);
+    pakes.set(id, { b, B, key, at: now });
+    return { id, B };
+  }
+  function verify(nonceHex, macHex, bind, cnonceHex, pake) {
+    if (Date.now() < lockedUntil) return { ok: false, code: 'locked', reason: `Too many wrong passwords. Try again in ${Math.ceil((lockedUntil - Date.now()) / 1000)} s.` };
+    const { key, salt } = cfg();
+    if (!key || !/^[0-9a-f]{64}$/.test(nonceHex)) return { ok: false, code: 'bad', reason: 'Bad request' };
     if (!bind || !bind.hostFp || !bind.clientFp) return { ok: false, code: 'old', reason: 'This PC needs a newer ScreenShare app to connect to it (ScreenShare 2.3 or SC-Remote).' };
-    const k = Buffer.from(key, 'hex');
-    const tail = `${nonceHex}|${bind.hostFp}|${bind.clientFp}`;
-    const expected = crypto.createHmac('sha256', k).update(tail).digest();
-    const ok = crypto.timingSafeEqual(expected, Buffer.from(macHex, 'hex'));
+    let ok, proof = null;
+    if (pake) {
+      const st = pakes.get(pake.id);
+      pakes.delete(pake.id);
+      if (!st || st.key !== key) return { ok: false, code: 'bad', reason: 'Bad request' };     // (or the password changed meanwhile)
+      proof = srp.hostFinish(key, st.b, st.B, pake.A, pake.m1, { nonce: nonceHex, salt, hostFp: bind.hostFp, clientFp: bind.clientFp });
+      ok = !!proof;
+    } else {
+      // apps from before the SRP sign-in (ScreenShare 2.3/2.4, SC-Remote up to 1.3.1): a signed nonce
+      if (!/^[0-9a-f]{64}$/.test(macHex || '')) return { ok: false, code: 'bad', reason: 'Bad request' };
+      const k = Buffer.from(key, 'hex');
+      const tail = `${nonceHex}|${bind.hostFp}|${bind.clientFp}`;
+      ok = crypto.timingSafeEqual(crypto.createHmac('sha256', k).update(tail).digest(), Buffer.from(macHex, 'hex'));
+      if (ok && /^[0-9a-f]{64}$/.test(cnonceHex || '')) proof = crypto.createHmac('sha256', k).update(`host|${cnonceHex}|${tail}`).digest('hex');
+    }
     if (!ok) {
       failures++;
       // 5 wrong passwords: locked for 1 min, then 2, 4… up to 30 min (reset by a right one)
@@ -96,7 +122,6 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
       return { ok: false, code: 'wrong', reason: 'Wrong password' };
     }
     failures = 0; lockouts = 0;
-    const proof = /^[0-9a-f]{64}$/.test(cnonceHex || '') ? crypto.createHmac('sha256', k).update(`host|${cnonceHex}|${tail}`).digest('hex') : null;
     return { ok: true, proof };
   }
 
@@ -943,12 +968,14 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
     setTimeout(() => { if (engine && inputDesktop !== 'Default') engine.webContents.send('remote:desktop', inputDesktop); updateScreenHelper(); }, 1500);
     return { ...r, version: labHost.version(), sid: currentSid };
   });
+  h('remote:pake-start', e => (isEngine(e.sender) ? pakeStart() : null));
   h('remote:verify', async (e, nonce, mac, peer, bind, extra) => {
     if (!isEngine(e.sender)) return { ok: false, reason: 'not allowed' };
     const name = String(peer || 'someone').slice(0, 60);       // what the other PC calls itself (not verified)
     bind = bind && typeof bind.hostFp === 'string' && typeof bind.clientFp === 'string' ? { hostFp: bind.hostFp, clientFp: bind.clientFp } : null;
     const from = extra && typeof extra === 'object' ? { addr: cleanAddr(extra.addr), relay: !!extra.relay } : {};
-    const r = verify(String(nonce), String(mac), bind, extra && typeof extra.cnonce === 'string' ? extra.cnonce : '');
+    const pk = extra && extra.pake && typeof extra.pake === 'object' ? { id: String(extra.pake.id), A: extra.pake.A, m1: extra.pake.m1 } : null;
+    const r = verify(String(nonce), String(mac), bind, extra && typeof extra.cnonce === 'string' ? extra.cnonce : '', pk);
     if (!r.ok) {
       if (AGENT) audit('denied', { name, addr: from.addr, reason: r.reason });
       historyAdd('denied', name, from, r.code || 'bad');
@@ -1012,6 +1039,13 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   });
   // the session window signed in: keep that PC in the list with the password that worked (if it was to be
   // remembered, or is already in the list, e.g. its password was changed and retyped)
+  // the session window signing in to a PC: answer the PC's half of the sign-in with the typed password
+  // (the key is derived here, off the main thread; nothing that leaves lets anyone test password guesses)
+  h('session:pake', async (e, q) => {
+    if (!sessionCreds.has(e.sender.id) || !q || typeof q.password !== 'string' || !/^[0-9a-f]{16,128}$/.test(q.salt || '') || !/^[0-9a-f]{64}$/.test(q.nonce || '')) return null;
+    const key = await new Promise((res, rej) => crypto.pbkdf2(q.password, Buffer.from(q.salt, 'hex'), PBKDF2_ROUNDS, 32, 'sha256', (err, k) => (err ? rej(err) : res(k))));
+    return srp.clientAnswer(key, q.B, { nonce: q.nonce, salt: q.salt, hostFp: String(q.hostFp), clientFp: String(q.clientFp) });
+  });
   h('session:signed-in', (e, password) => {
     const c = sessionCreds.get(e.sender.id);
     if (!c || c.mode !== 'password' || typeof password !== 'string' || !password) return false;

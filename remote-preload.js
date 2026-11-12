@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('remoteApp', {
   // engine
   hostConfig: () => inv('remote:host-config'),
   verify: (nonce, mac, peer, bind, extra) => inv('remote:verify', nonce, mac, peer, bind, extra),
+  pakeStart: () => inv('remote:pake-start'),
+  pakeAnswer: q => inv('session:pake', q),
   history: () => inv('remote:history'),
   onHistory: cb => ipcRenderer.on('remote:history-changed', () => cb()),
   serviceInfo: () => inv('remote:service-info'),

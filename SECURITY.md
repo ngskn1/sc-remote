@@ -8,8 +8,8 @@ Please don't open a public issue for a security problem. Use **Security › Repo
 
 ## What protects a PC
 
-- **Password, never stored or sent.** The PC keeps a PBKDF2-SHA256 key (150 000 rounds) derived from the password, in a file only administrators and the system account can read. Signing in is a challenge and response over that key.
-- **Checked both ways, tied to the connection.** The response covers both ends' DTLS certificate fingerprints, so it can't be relayed over another connection. The PC answers with its own proof that it knows the password, and the app sends nothing (input, clipboard, files) and shows nothing until that proof checks out.
+- **Password, never stored or sent.** The PC keeps a PBKDF2-SHA256 key (150 000 rounds) derived from the password, in a file only administrators and the system account can read.
+- **Sign-in that gives nothing away.** Signing in is SRP-6a, a password-authenticated key exchange (`remote/srp.js`: RFC 5054's 3072-bit group, SHA-256, with the PBKDF2 key as the secret). Neither side receives anything it could test password guesses against on its own computer: a stranger who connects to a PC, or an impostor that took a PC's ID, gets one guess per connection, and the lockout limits those. Both sides prove that they know the password, the proofs cover both ends' DTLS certificate fingerprints (so they can't be relayed over another connection), and the app sends nothing (input, clipboard, files) and shows nothing until the PC's proof checks out. An app refuses a PC that doesn't offer this sign-in.
 - **Lockout.** 5 wrong passwords lock sign-ins for 1 minute, then 2, 4… up to 30.
 - **Encrypted sessions.** Screen, input, clipboard and files travel over WebRTC (DTLS/SRTP) directly between the two PCs, or through a relay that can't decrypt them. The connection server only introduces them.
 - **History and log.** Every connection and refused attempt is listed in the app (Connection history) and in `agent\audit.log` (administrators).
@@ -19,7 +19,9 @@ Please don't open a public issue for a security problem. Use **Security › Repo
 ## Known limits
 
 - **Not audited.** This is a small project, reviewed by its authors only.
-- **Password guessing by an impostor.** Someone who poses as a PC (by taking its ID on the connection server while it's off) gets one response per connection attempt and can test password guesses against it offline. Long random passwords make that impractical; short or common ones don't. A password-authenticated key exchange would remove this; it is not implemented.
+- **The sign-in code is ours.** SRP-6a is a standard protocol, and the implementation is checked against the RFC 5054 test vector and an independent big-number implementation, but it has not been reviewed by a cryptographer. Its arithmetic is not constant-time.
+- **Older apps.** A PC still accepts apps from before this sign-in (ScreenShare 2.3/2.4, SC-Remote up to 1.3.1) with the earlier signed challenge, so they keep working during an upgrade. That costs the PC nothing, but those apps can still be fooled by an impostor PC into handing over something to test guesses against. Update them.
+- **Short passwords.** Guessing over the network is slow (5 tries, then a growing lockout), not impossible. Use 12 or more random characters.
 - **Unsandboxed Chromium as the system account.** The service's agent accepts WebRTC connections before the password is checked. A Chromium vulnerability reachable that way would run as the system account. Keep PCs updated.
 - **Public connection server.** IDs aren't secret and can be probed. Anyone who knows an ID can trigger the lockout (keeping the owner out too) or occupy the ID while the PC is off. They can't sign in or read anything.
 - **Unsigned binaries.** Windows shows a SmartScreen warning for the installer. Download it only from this repository's Releases page. Updates don't depend on Windows' signature check: they're verified with the release key.
