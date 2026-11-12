@@ -72,6 +72,15 @@ const serverQuery = () => process.env.SCREENSHARE_SERVER ? { server: process.env
 // One copy at a time: the remote host keeps a fixed ID, and a second copy would fight over it.
 // (The lab agent has its own profile folder, so it doesn't block the app of whoever is signed in.)
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
+// Our windows only ever show the app's own pages: no navigating elsewhere (a link, a dropped file), no new
+// windows, no embedded pages. (The agent's windows run with the system account's rights.)
+app.on('web-contents-created', (_e, wc) => {
+  const stay = (e, url) => { if (url !== wc.getURL()) e.preventDefault(); };     // (reloading the same page is fine)
+  wc.on('will-navigate', stay);
+  wc.on('will-redirect', stay);
+  wc.on('will-attach-webview', e => e.preventDefault());
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+});
 app.on('second-instance', (_e, argv) => { if (!AGENT && !argv.includes('--background')) openMainWindow(); });
 
 function openMainWindow() {
@@ -286,6 +295,11 @@ app.whenReady().then(() => {
       lab.statusFile = path.join(LAB_ROOT, 'status.json');     // shows this PC's agent state
       lab.agentDir = AGENT_DIR;                                  // Linux: the app sets this PC up as a lab PC itself
     }
+  }
+  // connection history: written by whichever process is this PC's host (the service's agent, or this app)
+  if (!LAB) {
+    const viaService = AGENT || !!(lab.serviceExe && fs.existsSync(lab.serviceExe));
+    lab.historyFile = viaService ? path.join(LAB_ROOT, 'history.json') : path.join(app.getPath('userData'), 'remote-history.json');
   }
   log(`started ${app.getVersion()} (${EDITION}${AGENT ? ' agent' : ''}) on ${process.platform}${BACKGROUND ? ' (background)' : ''}${process.argv.includes('--updated') ? ' (just updated)' : ''}`);
   remote = require('./remote/host-main')({ ...settingsIO, appDir: __dirname, serverQuery, openMainWindow, log, lab, edition: EDITION,

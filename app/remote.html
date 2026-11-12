@@ -43,6 +43,15 @@
   .updbox span { flex: 1; min-width: 220px; }
   .updbox.busy span::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 8px; border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; vertical-align: -1px; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  /* who connected to this PC */
+  details#hist { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 10px; }
+  details#hist summary { cursor: pointer; font-weight: 600; }
+  details#hist summary span { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  #histList { display: grid; gap: 2px; margin-top: 8px; max-height: 260px; overflow-y: auto; font-size: 13px; }
+  .h { display: grid; grid-template-columns: 128px 1fr auto; gap: 10px; padding: 4px 6px; border-radius: 6px; }
+  .h:nth-child(odd) { background: rgba(255,255,255,.03); }
+  .h .when { color: var(--muted); font-variant-numeric: tabular-nums; } .h .who small { color: var(--muted); margin-left: 6px; font-family: ui-monospace, monospace; }
+  .h .what { color: var(--muted); text-align: right; } .h.bad .what { color: var(--bad); } .h.live .what { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -83,6 +92,11 @@
     <div class="muted" id="snote"></div>
     <div class="row"><button id="sconf" class="primary">Change password or settings…</button><span class="muted">Windows asks for administrator permission.</span></div>
     <div class="msg" id="smsg"></div>
+    <details id="hist" class="hidden">
+      <summary>Connection history<span id="histCount"></span></summary>
+      <div class="muted" style="margin-top:6px">Who connected to this PC, and who tried. The name is what the other computer calls itself, so it isn't proof of who it was.</div>
+      <div id="histList"></div>
+    </details>
   </section>
 
   <section>
@@ -197,6 +211,33 @@ $('sconf').onclick = async () => {
   for (const t of [1500, 4000, 8000]) setTimeout(refreshService, t);
 };
 
+/* ---- connection history: who connected to this PC, and who tried ---- */
+const pad = n => String(n).padStart(2, '0');
+const fmtWhen = iso => { const d = new Date(iso); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const REFUSED = { wrong: 'wrong password', locked: 'refused: too many wrong passwords', declined: 'declined by the person at this PC', old: 'refused: outdated app', bad: 'refused: invalid request' };
+async function renderHistory() {
+  const list = await R.history();
+  if (!list) return;
+  $('hist').classList.remove('hidden');
+  $('histCount').textContent = list.length ? `(${list.length})` : '';
+  const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
+  const liveNow = !svc || !!(svc.status && svc.status.state === 'connected');     // (a session cut short by a power cut isn't "in progress")
+  if (!list.length) { $('histList').replaceChildren(el('div', 'muted', t('Nobody has connected to this PC yet.'))); return; }
+  $('histList').replaceChildren(...list.map(x => {
+    const row = el('div', 'h' + (x.kind === 'session' ? (x.live && liveNow ? ' live' : '') : ' bad'));
+    const who = el('span', 'who', x.name || '?');
+    if (x.addr) who.append(el('small', '', x.addr + (x.relay ? ` (${t('via relay')})` : '')));
+    let what;
+    if (x.kind === 'session') {
+      const mins = x.end ? Math.round((Date.parse(x.end) - Date.parse(x.t)) / 60000) : 0;
+      what = x.live && liveNow ? t('in progress') : !x.end ? t('end not recorded') : mins < 1 ? t('less than 1 min') : t('{0} min', mins);
+    } else what = t(REFUSED[x.reason] || REFUSED.bad) + (x.n > 1 ? ` (${x.n}×)` : '');
+    row.append(el('span', 'when', fmtWhen(x.t)), who, el('span', 'what', what));
+    return row;
+  }));
+}
+R.onHistory(renderHistory);
+
 /* ---- updates (SC-Remote): a notice here when a newer version is out ---- */
 function renderUpdate(u) {
   if (!u) return;
@@ -232,13 +273,16 @@ let product = 'ScreenShare';
     $('hostSec').classList.add('hidden'); $('svcSec').classList.remove('hidden');
     renderService(svc);
     setInterval(refreshService, 5000);
+    setInterval(renderHistory, 5000);        // (written by the service's agent, a different process)
   } else {
     $('hostSec').insertBefore($('upd'), $('hostSec').children[1]);   // (no service: the notice goes in this section)
+    $('hostSec').append($('hist'));
     refresh();
     setInterval(refresh, 5000);
   }
   renderSaved();
   renderUpdate(await R.updateInfo());
+  renderHistory();
 })();
 </script>
 </body>

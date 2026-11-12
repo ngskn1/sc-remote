@@ -8,8 +8,8 @@ SC-Remote is the remote-desktop-only edition of ScreenShare, for Windows PCs. It
 
 | File | What it is |
 |---|---|
-| `SC-Remote-Setup-1.3.0.exe` | Windows 10/11 installer: the app, plus the background service that makes the PC reachable. Newer versions are on [the Releases page](https://github.com/ngskn1/sc-remote/releases/latest). |
-| `ScreenShare-2.3.1-portable.exe` / `ScreenShare-2.3.1.AppImage` | The full ScreenShare (streaming + remote desktop). Use 2.3.0 or newer to connect to these PCs, e.g. from Linux. Older versions are refused. |
+| `SC-Remote-Setup-1.3.1.exe` | Windows 10/11 installer: the app, plus the background service that makes the PC reachable. Newer versions are on [the Releases page](https://github.com/ngskn1/sc-remote/releases/latest). |
+| `ScreenShare-2.4.0-portable.exe` / `ScreenShare-2.4.0.AppImage` | The full ScreenShare (streaming + remote desktop). Use 2.4.0 or newer to connect to these PCs, e.g. from Linux. (2.3 still connects to an updated PC, but without checking that the PC is the real one.) |
 
 ## 1. Install on a lab PC
 
@@ -33,7 +33,7 @@ The installer also does the following:
 
 **PCs you only connect from** (your own laptop, say) use the same installer. Untick **Allow remote access to this PC** and click Save. The service then stays idle and nobody can connect to that PC.
 
-**Silent install** (`SC-Remote-Setup-1.3.0.exe /S`) skips the settings window, and remote access stays off. To set it up later, open the app on that PC and click **Configurar o acesso remoto…** (Set up remote access…).
+**Silent install** (`SC-Remote-Setup-1.3.1.exe /S`) skips the settings window, and remote access stays off. To set it up later, open the app on that PC and click **Configurar o acesso remoto…** (Set up remote access…).
 
 ## 2. Connecting
 
@@ -49,6 +49,12 @@ On that PC, open SC-Remote. Under **Este computador** (This computer) you see th
 
 - **New password:** this disconnects anyone connected. Leave it empty to keep the current one.
 - **Untick "Allow remote access":** the PC becomes unreachable.
+
+## Connection history
+
+**Este computador** has **Histórico de conexões** (Connection history): every connection to this PC with its date, the name and network address of the computer that connected, and how long it lasted, plus the attempts that were refused (wrong password, too many wrong passwords, declined by the person at the PC). Anyone using the PC can read it, and nobody can edit or clear it from the app. It keeps the last 200 connections and the last 100 refused attempts, counted separately, so a burst of failed attempts can't push the real connections off the list.
+
+The name is what the other computer calls itself, so it isn't proof of who it was. The address is the one the connection really used. A row of wrong passwords from an address you don't know means someone is guessing: change that PC's password to a longer one.
 
 ## Language and feedback
 
@@ -67,22 +73,27 @@ SC-Remote looks for a new version every time it starts, and twice a day while it
 
 Nothing is installed without someone clicking the button, so PCs nobody uses keep their version until someone does. Any user signed in to the PC can start an update, but only an official, signed version newer than the installed one is ever installed.
 
-**Upgrading from 1.2.0:** 1.2.0 can't update itself. Run `SC-Remote-Setup-1.3.0.exe` on each PC once. It updates in place, keeping the ID, password and settings, and from then on updates come through the app.
+**Upgrading from 1.2.0:** 1.2.0 can't update itself. Run `SC-Remote-Setup-1.3.1.exe` on each PC once. Until a PC is updated, apps on 1.3.1 refuse to connect to it. It updates in place, keeping the ID, password and settings, and from then on updates come through the app.
 
 **Upgrading from the test version:** if a PC has the earlier "ScreenShare Remote" installed, uninstall it first (Settings › Apps). SC-Remote is installed as a separate program, with its own service and folder.
 
 ## 4. Security, briefly
 
 - **Password lockout:** after 5 wrong passwords, the PC refuses even the right one for 1 minute, then 2, 4… up to 30 minutes.
-- **Tied to the connection:** the password check is bound to that encrypted connection, so a compromised connection server can't relay it somewhere else. That's why apps older than ScreenShare 2.3 are refused.
+- **Tied to the connection:** the password check is bound to that encrypted connection, so a compromised connection server can't relay it somewhere else.
+- **Checked both ways:** the PC must prove that it knows the password too, before the app sends it anything. A program that took the PC's ID on the connection server (possible while the PC is off) is refused with "não conseguiu provar que conhece a senha". That's why both ends need SC-Remote 1.3.1 / ScreenShare 2.4 or newer: older PCs can't give that proof and are refused.
+- **Use long passwords.** Whoever manages to pose as a PC still sees one scrambled answer per connection attempt, which lets them test password guesses on their own computer. A password of 12 or more random characters makes that hopeless; a short or common one doesn't.
+- **History:** see "Connection history" above.
 - **Log:** every connection, refusal and switch to the sign-in screen is written to `C:\ProgramData\SC-Remote\agent\audit.log`.
 - **The session itself** (screen, input, clipboard, files) is encrypted end to end between the two PCs. The free public PeerJS server only introduces them, and it sees their IP addresses but not the contents.
 
 ### Honest limits
 
-- **The updater is new.** Its download and signature checks were tested, but the Windows-only steps (installing as the system account, reopening the app afterwards) run for the first time with the first real update, 1.3.0 → 1.3.1. If that update fails, the PC keeps 1.3.0 and stays reachable, and installing the new version by hand always works.
+- **The updater is new.** Its download and signature checks were tested, but the Windows-only steps (installing as the system account, reopening the app afterwards) run for the first time with the first real update, 1.3.0 → 1.3.1 or later. If that update fails, the PC keeps its version and stays reachable, and installing the new version by hand always works.
 - **Not audited.** It's a homemade tool, not audited security software.
-- **Chromium sandbox off.** The background part runs on Electron (Chromium) under the system account, where Chromium's sandbox can't run. Keep it updated.
+- **Chromium sandbox off.** The background part runs on Electron (Chromium) under the system account, where Chromium's sandbox can't run, and it talks to computers that haven't given the password yet. A serious Chromium bug could therefore be used against a PC by someone who only knows its ID. Install updates when they appear: each release brings the current Chromium fixes.
+- **The connection server is someone else's.** PCs find each other through the free public PeerJS server. It can't read or alter sessions, but if it's down nobody connects, and anyone who knows a PC's ID can keep that PC offline or lock its password check by trying wrong passwords. A group server (`server/` in the source) removes that dependence.
+- **The file limit is a guard rail.** Keeping remote file access inside the signed-in user's folder stops ordinary mistakes and snooping. It isn't a hard wall against someone who both has the PC's password and can already run programs on that PC.
 - **Antivirus** may be suspicious of an unsigned service that starts a program on the sign-in screen, because it does what remote-access tools do. If it blocks something, add an exception for `C:\Program Files\SC-Remote`.
 - **IT approval.** Check with your institution's IT before installing a remote-access service on its PCs.
 
@@ -98,7 +109,8 @@ Nothing is installed without someone clicking the button, so PCs nobody uses kee
 | Last update attempt | `C:\ProgramData\SC-Remote\update-state.json` (details in the service log) |
 
 - **"… is offline"** means the PC is off, has no internet, remote access is turned off, or the ID is mistyped.
-- **"needs a newer ScreenShare app"** means the app you connect from is older than 2.3. Update it.
+- **"needs a newer ScreenShare app"** means the app you connect from is too old. Update it.
+- **"usa uma versão antiga"** (runs an older version) means the PC you connect to has SC-Remote 1.3.0 or older (or ScreenShare before 2.4). Update that PC.
 
 **Uninstall:** use Settings › Apps › SC-Remote. This removes the service, the tray entry, the firewall rule and `C:\ProgramData\SC-Remote`, and restores the Ctrl+Alt+Del policy.
 

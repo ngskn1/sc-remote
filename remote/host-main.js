@@ -77,23 +77,82 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
 
   // bind: the two ends' DTLS fingerprints. The client then signs "nonce|host|client", which ties the password
   // check to this exact encrypted connection (a relay in the middle can't reuse it). The agent requires it.
-  function verify(nonceHex, macHex, bind) {
-    if (Date.now() < lockedUntil) return { ok: false, reason: `Too many wrong passwords. Try again in ${Math.ceil((lockedUntil - Date.now()) / 1000)} s.` };
+  // cnonce: the client's own random number. With it, a right password is answered with a proof that this PC
+  // knows the password too ("host|cnonce|nonce|host|client"), so the client can tell this PC from an impostor
+  // that took its ID on the connection server while it was off.
+  function verify(nonceHex, macHex, bind, cnonceHex) {
+    if (Date.now() < lockedUntil) return { ok: false, code: 'locked', reason: `Too many wrong passwords. Try again in ${Math.ceil((lockedUntil - Date.now()) / 1000)} s.` };
     const { key } = cfg();
-    if (!key || !/^[0-9a-f]{64}$/.test(nonceHex) || !/^[0-9a-f]{64}$/.test(macHex || '')) return { ok: false, reason: 'Bad request' };
-    if (AGENT && !bind) return { ok: false, reason: 'This PC needs a newer ScreenShare app to connect to it (ScreenShare 2.3 or SC-Remote).' };
-    const data = bind ? Buffer.from(`${nonceHex}|${bind.hostFp}|${bind.clientFp}`) : Buffer.from(nonceHex, 'hex');
-    const expected = crypto.createHmac('sha256', Buffer.from(key, 'hex')).update(data).digest();
+    if (!key || !/^[0-9a-f]{64}$/.test(nonceHex) || !/^[0-9a-f]{64}$/.test(macHex || '')) return { ok: false, code: 'bad', reason: 'Bad request' };
+    if (!bind || !bind.hostFp || !bind.clientFp) return { ok: false, code: 'old', reason: 'This PC needs a newer ScreenShare app to connect to it (ScreenShare 2.3 or SC-Remote).' };
+    const k = Buffer.from(key, 'hex');
+    const tail = `${nonceHex}|${bind.hostFp}|${bind.clientFp}`;
+    const expected = crypto.createHmac('sha256', k).update(tail).digest();
     const ok = crypto.timingSafeEqual(expected, Buffer.from(macHex, 'hex'));
     if (!ok) {
       failures++;
       // 5 wrong passwords: locked for 1 min, then 2, 4… up to 30 min (reset by a right one)
       if (failures >= 5) { lockedUntil = Date.now() + Math.min(30, 2 ** lockouts) * 60000; lockouts++; failures = 0; }
-      return { ok: false, reason: 'Wrong password' };
+      return { ok: false, code: 'wrong', reason: 'Wrong password' };
     }
     failures = 0; lockouts = 0;
-    return { ok: true };
+    const proof = /^[0-9a-f]{64}$/.test(cnonceHex || '') ? crypto.createHmac('sha256', k).update(`host|${cnonceHex}|${tail}`).digest('hex') : null;
+    return { ok: true, proof };
   }
+
+  /* ---------------- connection history (who connected to this PC, and who tried) ---------------- */
+  // Kept next to this PC's status (readable by its users; only the host process writes it). Names are what the
+  // other computer calls itself, so they aren't proof of who it was; the address is the one the connection used.
+  // Refused attempts need no password, so strangers can produce any number of them: they get their own share
+  // of the list and can't push the real sessions out of it.
+  const HISTORY_SESSIONS = 200, HISTORY_REFUSED = 100;
+  function trimHistory(list) {
+    const keep = new Set([...list.filter(x => x.kind === 'session').slice(-HISTORY_SESSIONS), ...list.filter(x => x.kind !== 'session').slice(-HISTORY_REFUSED)]);
+    return list.filter(x => keep.has(x));
+  }
+  let histLoaded = false, liveEntry = null;
+  const readHistory = () => { try { const a = JSON.parse(fs.readFileSync(lab.historyFile, 'utf8')); return Array.isArray(a) ? a : []; } catch { return []; } };
+  function writeHistory(list) {
+    if (!lab.historyFile) return;
+    try {
+      const tmp = lab.historyFile + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(trimHistory(list)));
+      fs.renameSync(tmp, lab.historyFile);
+    } catch (e) { log('history: ' + e.message); }
+    if (manager && !manager.isDestroyed()) manager.webContents.send('remote:history-changed');
+  }
+  function loadHistory() {
+    let list = readHistory();
+    if (!histLoaded) {                    // sessions left open by a crash or power cut: their end isn't known
+      histLoaded = true;
+      if (list.some(x => x.live)) { list = list.map(x => (x.live ? { ...x, live: false } : x)); writeHistory(list); }
+    }
+    return list;
+  }
+  const cleanAddr = a => (typeof a === 'string' && /^[0-9a-fA-F:.]{3,45}$/.test(a) ? a : '');
+  function historyAdd(kind, name, from = {}, reason = '') {
+    if (!lab.historyFile) return;
+    const list = loadHistory(), now = new Date().toISOString();
+    const addr = cleanAddr(from.addr), relay = !!from.relay;
+    if (kind !== 'session') {             // refused attempts: one line per source and reason, with a count
+      const last = list[list.length - 1];
+      if (last && last.kind === kind && last.reason === reason && last.name === name && last.addr === addr && Date.now() - Date.parse(last.last || last.t) < 15 * 60e3) {
+        last.n = (last.n || 1) + 1; last.last = now;
+      } else list.push({ t: now, kind, reason, name, addr, relay, n: 1 });
+      return writeHistory(list);
+    }
+    liveEntry = { t: now, kind, name, addr, relay, live: true };
+    list.push(liveEntry);
+    writeHistory(list);
+  }
+  function historyEnd() {
+    if (!liveEntry) return;
+    const start = liveEntry.t; liveEntry = null;
+    const list = loadHistory();
+    const e = list.find(x => x.kind === 'session' && x.t === start);
+    if (e) { e.live = false; e.end = new Date().toISOString(); writeHistory(list); }
+  }
+  ipcMain.handle('remote:history', () => (lab.historyFile ? trimHistory(readHistory()).reverse() : null));
 
   /* ---------------- engine (host) ---------------- */
   const hostEnabled = () => (labHost ? labHost.ready() : !!cfg().enabled && hasPassword());
@@ -133,6 +192,7 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
     if (sessionActive) injector.releaseAll();
     sessionActive = false;
     if (session) audit('disconnect', { member: session.name, fp: session.fp, peer: session.peer, minutes: Math.round((Date.now() - session.started) / 6000) / 10 });
+    historyEnd();
     session = null;
     closeBanner();
     updateScreenHelper();
@@ -883,14 +943,23 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
     setTimeout(() => { if (engine && inputDesktop !== 'Default') engine.webContents.send('remote:desktop', inputDesktop); updateScreenHelper(); }, 1500);
     return { ...r, version: labHost.version(), sid: currentSid };
   });
-  h('remote:verify', async (e, nonce, mac, peer, bind) => {
+  h('remote:verify', async (e, nonce, mac, peer, bind, extra) => {
     if (!isEngine(e.sender)) return { ok: false, reason: 'not allowed' };
     const name = String(peer || 'someone').slice(0, 60);       // what the other PC calls itself (not verified)
     bind = bind && typeof bind.hostFp === 'string' && typeof bind.clientFp === 'string' ? { hostFp: bind.hostFp, clientFp: bind.clientFp } : null;
-    const r = verify(String(nonce), String(mac), bind);
-    if (!r.ok) { if (AGENT) audit('denied', { name, reason: r.reason }); return r; }
-    if (AGENT && !(await askConsent(name))) { audit('declined', { name }); return { ok: false, reason: 'The person at that PC declined the connection.' }; }
+    const from = extra && typeof extra === 'object' ? { addr: cleanAddr(extra.addr), relay: !!extra.relay } : {};
+    const r = verify(String(nonce), String(mac), bind, extra && typeof extra.cnonce === 'string' ? extra.cnonce : '');
+    if (!r.ok) {
+      if (AGENT) audit('denied', { name, addr: from.addr, reason: r.reason });
+      historyAdd('denied', name, from, r.code || 'bad');
+      return { ok: false, reason: r.reason };
+    }
+    if (AGENT && !(await askConsent(name))) {
+      audit('declined', { name, addr: from.addr }); historyAdd('denied', name, from, 'declined');
+      return { ok: false, reason: 'The person at that PC declined the connection.' };
+    }
     endSession();                       // a new controller replaces the old one
+    historyAdd('session', name, from);
     sessionActive = true;
     currentSid = ++sessionSeq;
     r.sid = currentSid;
@@ -898,7 +967,7 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
     setStatus({ state: 'connected', peer: name });
     if (AGENT) {
       session = { name, started: Date.now() };
-      audit('connect', { name });
+      audit('connect', { name, addr: from.addr, relay: from.relay });
       openBanner(name);
       setTimeout(() => { if (engine && inputDesktop !== 'Default') engine.webContents.send('remote:desktop', inputDesktop); updateScreenHelper(); }, 1500);
     }

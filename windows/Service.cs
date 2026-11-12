@@ -344,7 +344,22 @@ static class Setup {
     Directory.SetAccessControl(dir, ds);
   }
 
+  static bool OwnedByAdmins(string dir) {
+    try {
+      SecurityIdentifier o = new DirectoryInfo(dir).GetAccessControl().GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+      return o != null && (o.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid) || o.IsWellKnown(WellKnownSidType.LocalSystemSid));
+    } catch { return false; }
+  }
+
   public static void EnsureFolders() {
+    // Anyone may create folders in ProgramData. If someone without administrator rights made ours before the
+    // first installation, they own it and could have put their own settings (and password) in it: set it aside.
+    // (Never on an update: the folder is then the one a previous installation made.)
+    if (Directory.Exists(Paths.Root) && !Installed() && !OwnedByAdmins(Paths.Root)) {
+      Console.WriteLine("The data folder existed and was not made by an administrator: starting with a clean one.");
+      try { Directory.Move(Paths.Root, Paths.Root + ".old-" + DateTime.Now.ToString("yyyyMMddHHmmss")); }
+      catch { Directory.Delete(Paths.Root, true); }
+    }
     Directory.CreateDirectory(Paths.Root);
     Directory.CreateDirectory(Paths.Agent);
     Protect(Paths.Root, true);
@@ -481,8 +496,15 @@ static class Updater {
       // any case (if the installer failed halfway, the PC stays reachable with the version it had).
       string exitFile = Path.Combine(Paths.Updates, "installer-exit.txt"), script = Path.Combine(Paths.Updates, "run-update.cmd");
       try { File.Delete(exitFile); } catch { }
+      // The installer unpacks itself into the temporary folder before it runs. The system account's usual one
+      // (C:\Windows\Temp) lets any user create files, so it gets a folder only administrators can touch.
+      string tmp = Path.Combine(Paths.Updates, "tmp");
+      try { if (Directory.Exists(tmp)) Directory.Delete(tmp, true); } catch { }
+      Directory.CreateDirectory(tmp);
       File.WriteAllText(script,
         "@echo off\r\n" +
+        "set \"TEMP=" + tmp + "\"\r\n" +
+        "set \"TMP=" + tmp + "\"\r\n" +
         "start \"\" /wait \"" + installer + "\" /S\r\n" +
         ">\"" + exitFile + "\" echo %ERRORLEVEL%\r\n" +
         "\"" + Path.Combine(Environment.SystemDirectory, "sc.exe") + "\" start " + Paths.ServiceName + " >nul 2>&1\r\n", Encoding.ASCII);

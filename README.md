@@ -4,8 +4,8 @@ This is the same screen sharing as `screenshare.html`, plus **game audio without
 
 | File | Platform | How to run |
 |---|---|---|
-| `ScreenShare-2.3.1-portable.exe` | Windows 10/11 x64 | Double-click it. Nothing is installed. |
-| `ScreenShare-2.3.1.AppImage` | Linux x64 | Run `chmod +x ScreenShare-2.3.1.AppImage`, then `./ScreenShare-2.3.1.AppImage` |
+| `ScreenShare-2.4.0-portable.exe` | Windows 10/11 x64 | Double-click it. Nothing is installed. |
+| `ScreenShare-2.4.0.AppImage` | Linux x64 | Run `chmod +x ScreenShare-2.4.0.AppImage`, then `./ScreenShare-2.4.0.AppImage` |
 
 Everything in the browser version works here too: a fixed room code, saved friends, wait-for-host and auto-rejoin, and changing any setting, the audio source or the shared window while live. See `README.md` next to `screenshare.html`.
 
@@ -13,7 +13,9 @@ Everything in the browser version works here too: a fixed room code, saved frien
 
 Settings are saved in a `ScreenShare-data` folder next to the executable. Keep the two together on a USB stick and your settings travel with them.
 
-**New in 2.3.1:** a saved PC keeps the password that actually worked. A mistyped one is no longer saved, and retyping a changed password updates the saved one. The Files panel reopens in the folder you last used on that PC.
+**New in 2.4.0:** the password check now works both ways. The PC you connect to must prove that it knows the password too, before it receives a single key press, so something that took its ID on the connection server while it was off is found out. Because of that, 2.4.0 (and SC-Remote 1.3.1) only connect to PCs running 2.4.0 / SC-Remote 1.3.1 or newer; update both ends. **This computer** also has a **Connection history**: who connected, from which address and for how long, and who tried with a wrong password.
+
+**2.3.1:** a saved PC keeps the password that actually worked. A mistyped one is no longer saved, and retyping a changed password updates the saved one. The Files panel reopens in the folder you last used on that PC.
 
 **2.3.0:** the remote password check is tied to the encrypted connection, so a compromised connection server can't relay it. SC-Remote PCs only accept apps from 2.3.0 on; older hosts still work with this version. Ctrl+Alt+Del is the real one on PCs that support it. Closing the control window ends the session on the other PC right away. The 2.2.0 notes still apply: a second computer taking over no longer confuses the host.
 
@@ -135,7 +137,7 @@ The session window:
 
 **Windows** shows a "Windows protected your PC" warning because the exe isn't code-signed. Click **More info → Run anyway**. A portable exe unpacks itself on every start, so it takes a few seconds to open.
 
-**Linux:** AppImages need FUSE 2. On Debian 12, run `sudo apt install libfuse2`. Without it, run the app with `./ScreenShare-2.3.1.AppImage --appimage-extract-and-run`.
+**Linux:** AppImages need FUSE 2. On Debian 12, run `sudo apt install libfuse2`. Without it, run the app with `./ScreenShare-2.4.0.AppImage --appimage-extract-and-run`.
 
 ## Build from source
 
@@ -180,5 +182,7 @@ Optional release notes: set the repository variable `SC_REMOTE_RELEASE_NOTES` (S
 **The release key.** The private key is stored only in the repository secret `SC_REMOTE_UPDATE_KEY`. Its public half, `build/sc-remote/update-public.pem`, is built into every copy. Never commit the private key (`.gitignore` blocks `*.pem` except the public one). If the key is lost or leaked, make a new pair, replace `update-public.pem` and the secret, and install the next version by hand on every PC once, since copies only trust the old key. To make a new pair: `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out key.pem` and `openssl pkey -in key.pem -pubout -out build/sc-remote/update-public.pem`.
 
 To sign locally instead (e.g. to test): `npm run dist:remote`, then `SC_REMOTE_UPDATE_KEY_FILE=key.pem npm run release:remote` writes `dist-remote/sc-remote-update.json`, and adding `-- --publish` uploads both files with the `gh` CLI.
+
+See `SECURITY.md` for how the pieces are protected, the known limits, and how to report a problem.
 
 **Test hooks (development only):** `SCREENSHARE_FAKE_AUDIO=1` replaces the capture with a 440 Hz tone. `SCREENSHARE_SERVER=host:port` uses a self-hosted PeerJS server (`npx peer --port 9000`).

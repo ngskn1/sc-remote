@@ -65,6 +65,32 @@ async function signNonce(password, saltHex, nonceHex, bound = null) {
   return hex(await crypto.subtle.sign('HMAC', key, data));
 }
 
+// Both halves of a sign-in on the client: "mac" proves to the host that we know the password; "proof" is what
+// the host must answer to prove that it knows it too (so an impostor that took the PC's ID is found out before
+// it sees a single key press). cnonce: our own random number, so an old answer can't be replayed.
+async function passwordProofs(password, saltHex, nonceHex, bound, cnonceHex) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: unhex(saltHex), iterations: PBKDF2_ROUNDS }, base, 256);
+  const key = await crypto.subtle.importKey('raw', bits, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sign = async text => hex(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(text)));
+  const tail = `${nonceHex}|${bound.hostFp}|${bound.clientFp}`;
+  return { mac: await sign(tail), proof: await sign(`host|${cnonceHex}|${tail}`) };
+}
+
+// Where a connection really comes from: the address of the path it uses (relay: through a relay server)
+async function remoteAddress(conn) {
+  try {
+    // (never hold up a sign-in for this)
+    const stats = await Promise.race([conn.peerConnection.getStats(), new Promise((_, no) => setTimeout(() => no(new Error('timeout')), 1500))]);
+    let pair = null;
+    stats.forEach(s => { if (s.type === 'transport' && s.selectedCandidatePairId) pair = stats.get(s.selectedCandidatePairId) || pair; });
+    if (!pair) stats.forEach(s => { if (!pair && s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s; });
+    if (!pair) return {};
+    const rc = stats.get(pair.remoteCandidateId), lc = stats.get(pair.localCandidateId);
+    return { addr: (rc && (rc.address || rc.ip)) || '', relay: !!((rc && rc.candidateType === 'relay') || (lc && lc.candidateType === 'relay')) };
+  } catch { return {}; }
+}
+
 // Prefer a codec and ask Chrome to start at a sensible bitrate (it otherwise ramps up slowly).
 function remoteSdp(sdp, codec, kbps) {
   const lines = sdp.split('\r\n');
