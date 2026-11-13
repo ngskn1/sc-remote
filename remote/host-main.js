@@ -713,17 +713,24 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   const sha1 = buf => crypto.createHash('sha1').update(buf).digest('hex');
   let lastLogged = '';
   const logOnce = m => { if (m !== lastLogged) { lastLogged = m; log(m); } };
+  // Every read has a time limit: one that never answers (seen with the Windows agent, which has no focused
+  // window) must not stop clipboard sync altogether.
+  const timed = (p, ms, what, fallback) => {
+    let timer;
+    return Promise.race([Promise.resolve(p).catch(() => fallback),
+      new Promise(r => { timer = setTimeout(() => { logOnce(`clipboard: ${what} did not answer within ${ms} ms`); r(fallback); }, ms); })]).finally(() => clearTimeout(timer));
+  };
   async function readClipboard(withImage) {
-    const text = await clipboard.readText().catch(() => '');
+    const text = await timed(clipboard.readText(), 1500, 'reading text', '');
     let png = null;
-    if (withImage && await clipboard.has('image/png').catch(() => false)) {
-      try {
+    if (withImage && await timed(clipboard.has('image/png'), 1500, 'checking for an image', false)) {
+      png = await timed((async () => {
         const items = await clipboard.read();
         const it = items.find(i => i.types.includes('image/png'));
-        if (it) png = Buffer.from(await (await it.getType('image/png')).arrayBuffer());
-      } catch {}
+        return it ? Buffer.from(await (await it.getType('image/png')).arrayBuffer()) : null;
+      })(), 3000, 'reading an image', null);
     }
-    const files = await clipFiles.readFiles().catch(e => { logOnce('reading copied files: ' + e.message); return null; });
+    const files = await timed(clipFiles.readFiles().catch(e => { logOnce('reading copied files: ' + e.message); return null; }), 5000, 'reading copied files', null);
     return { text, png, files: files || [] };
   }
   async function pollClipboard() {
@@ -757,9 +764,11 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   function broadcastClip(payload) { for (const wc of clipWatchers) if (!wc.isDestroyed()) wc.send('clip:changed', payload); }
   async function watchClipboard(wc, on) {
     if (on) {
-      if (!clipWatchers.has(wc)) { clipWatchers.add(wc); wc.once('destroyed', () => watchClipboard(wc, false)); }
+      const first = !clipWatchers.has(wc);
+      if (first) { clipWatchers.add(wc); wc.once('destroyed', () => watchClipboard(wc, false)); }
       const { text, png, files } = await readClipboard(true);    // only send what changes from now on
       lastClip = { text, image: png ? sha1(png) : null, files: files.join('\n') };
+      if (first) log(`clipboard: watching (${clipWatchers.size})`);
     } else clipWatchers.delete(wc);
     if (clipWatchers.size && !clipTimer) clipTimer = setInterval(pollClipboard, 500);
     if (!clipWatchers.size && clipTimer) { clearInterval(clipTimer); clipTimer = null; }

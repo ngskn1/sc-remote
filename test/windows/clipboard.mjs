@@ -102,17 +102,20 @@ const userHome = process.env.USERPROFILE;
 const HOSTFILE = path.join(userHome, 'Documents', 'from-the-pc.txt');
 fs.mkdirSync(path.dirname(HOSTFILE), { recursive: true }); fs.writeFileSync(HOSTFILE, 'made on the PC');
 await s.evaluate(() => document.querySelectorAll('#acts .act').forEach(a => a.remove()));
-// as Explorer does it: its "Copy" command, with the copying program still running (a live clipboard object)
+// as Explorer does it: a live OLE clipboard object, rendered on request by the program that copied (which keeps
+// running and answering), not data handed to Windows up front
 const { spawn } = await import('child_process');
 const explorerCopy = spawn('powershell.exe', ['-NoProfile', '-Sta', '-Command',
-  `$f = Get-Item -LiteralPath '${HOSTFILE}'; (New-Object -ComObject Shell.Application).NameSpace($f.DirectoryName).ParseName($f.Name).InvokeVerb('copy'); Start-Sleep 40`], { stdio: 'ignore' });
+  `Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.DataObject; ` +
+  `$d.SetData([System.Windows.Forms.DataFormats]::FileDrop, [string[]]@('${HOSTFILE}')); [System.Windows.Forms.Clipboard]::SetDataObject($d, $false); ` +
+  `$end = (Get-Date).AddSeconds(45); while ((Get-Date) -lt $end) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 20 }`], { stdio: 'ignore' });
 await sleep(3000);
-console.log('after Explorer\'s Copy, the clipboard (as the user):', userFileList());
+console.log('after an Explorer-style copy, the clipboard (as the user):', userFileList());
 await until(async () => (await acts()).some(a => /from-the-pc/.test(a) && /Ready: press Ctrl\+V here|failed/i.test(a)), 20000);
 let a2 = await acts();
 console.log('activity:', JSON.stringify(a2), 'toast:', await toastText());
 console.log('agent log:\n' + agentLogSince());
-ok(a2.some(a => /Ready: press Ctrl\+V here/.test(a) && /from-the-pc/.test(a)), 'a file copied with Explorer\'s Copy on the PC arrives here, ready to paste');
+ok(a2.some(a => /Ready: press Ctrl\+V here/.test(a) && /from-the-pc/.test(a)), 'a file copied Explorer-style on the PC (live clipboard object) arrives here, ready to paste');
 explorerCopy.kill();
 // and copied by a program that sets the list and exits (Set-Clipboard)
 const HOSTFILE2 = path.join(userHome, 'Documents', 'second-from-the-pc.txt'); fs.writeFileSync(HOSTFILE2, 'second');
