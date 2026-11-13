@@ -112,6 +112,7 @@
     '⬇ Downloaded {0} to {1}': '⬇ {0} baixado em {1}',
     'Download cancelled': 'Download cancelado',
     'Download failed: ': 'Falha no download: ',
+    'the PC stopped answering': 'o PC parou de responder',
     'Upload…': 'Enviar…',
     'Up one folder': 'Subir uma pasta',
     'Home folder': 'Pasta pessoal',

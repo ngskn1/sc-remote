@@ -1,4 +1,1 @@
-{
-  "version": "1.5.0",
-  "repo": "ngskn1/sc-remote"
-}
+{"version": "1.5.1", "repo": "ngskn1/sc-remote", "notes": "Windows: texto, imagens e arquivos copiados no PC agora chegam ao computador que controla. Painel Arquivos com duas abas (o PC e este computador), pasta de downloads à escolha e pastas favoritas. Corrigido: às vezes uma senha certa era recusada.\n\nWindows: text, pictures and files copied on the PC now reach the controlling computer. Files panel with two tabs (the PC and this computer), a download folder of your choice and favourite folders. Fixed: a right password was sometimes refused."}

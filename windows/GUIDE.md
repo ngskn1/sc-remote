@@ -8,8 +8,8 @@ SC-Remote is the remote-desktop-only edition of ScreenShare, for the group's Win
 
 | File | What it is |
 |---|---|
-| `SC-Remote-Setup-1.5.0.exe` | Windows 10/11 installer: the app, plus the background service that makes the PC reachable. |
-| `SC-Remote-1.5.0-mac.dmg` | Mac (Intel and Apple Silicon, macOS 12 or newer): connects to other PCs. The Mac itself can't be controlled. |
+| `SC-Remote-Setup-1.5.1.exe` | Windows 10/11 installer: the app, plus the background service that makes the PC reachable. |
+| `SC-Remote-1.5.1-mac.dmg` | Mac (Intel and Apple Silicon, macOS 12 or newer): connects to other PCs. The Mac itself can't be controlled. |
 | `SC-Remote-x86_64.AppImage` | Linux (64-bit): connects to other PCs, and can be controlled while someone is signed in. |
 
 All three are on [the Releases page](https://github.com/ngskn1/sc-remote/releases/latest), always in their newest version.
@@ -37,7 +37,7 @@ The installer also does the following:
 
 **PCs you only connect from** (your own laptop, say) use the same installer. Untick **Allow remote access to this PC** and click Save. The service then stays idle and nobody can connect to that PC.
 
-**Silent install** (`SC-Remote-Setup-1.5.0.exe /S`) skips the settings window, and remote access stays off. To set it up later, open the app on that PC and click **Configurar o acesso remoto…** (Set up remote access…).
+**Silent install** (`SC-Remote-Setup-1.5.1.exe /S`) skips the settings window, and remote access stays off. To set it up later, open the app on that PC and click **Configurar o acesso remoto…** (Set up remote access…).
 
 ## 2. Connecting
 
@@ -46,6 +46,8 @@ Open SC-Remote (from the Start menu, or the tray icon) and go to **Conectar a um
 - **Keys ▾ › Ctrl + Alt + Del** sends the real thing, to unlock a PC or sign in.
 - At the sign-in screen, the lock screen or a UAC prompt, you still see and control the PC. That picture is a bit less sharp, and it switches back by itself.
 - Clipboard, file copy-paste, drag-and-drop and the Files panel work as in ScreenShare. On these PCs, files are limited to the signed-in user's own folder, or `C:\Users\Public` when nobody is signed in. The service has full system rights, so without this limit anyone with the password could read or change any file on the PC.
+- Text, pictures and files copied on the PC (Ctrl+C, or Copy in Explorer) can be pasted on your computer, and the other way round. Files copied from Windows' own folders (`C:\Windows`, `Program Files`, `ProgramData`), from another user's profile, or a whole drive, are not passed on.
+- **The Files panel** (the **Files** button; **Arquivos** in Portuguese) has two tabs. **Em <PC>** (On <PC>) browses the PC: click a file to download it, or ⬇ on a folder to download all of it. The bar at the bottom says where downloads go; **Alterar** (Change) picks another folder. **Neste computador** (On this computer) browses your own computer: click a file, or ⬆ on a folder, to upload it into the folder open in the first tab. **Salvar downloads aqui** (Save downloads here) makes the folder you're in the download folder. Click ☆ to keep a folder as a favourite: favourites for the PC are kept per PC, and those for your own computer are shared by all PCs.
 
 ## 3. Changing the password or settings
 
@@ -138,7 +140,7 @@ If any step fails, send me the logs from section 5.
 
 ### On a Mac (connects only)
 
-1. Download `SC-Remote-1.5.0-mac.dmg`, open it and drag **SC-Remote** into **Applications**.
+1. Download `SC-Remote-1.5.1-mac.dmg`, open it and drag **SC-Remote** into **Applications**.
 2. Open SC-Remote. The first time, macOS refuses ("Apple could not verify…"), because the app isn't registered with Apple (that costs US$99 a year). Click **Done**, then go to **System Settings › Privacy & Security**, scroll down to the message about SC-Remote and click **Open Anyway**. Confirm with your Mac's password. From then on it opens normally.
    - On macOS 14 or older you can instead Control-click SC-Remote in Applications and choose **Open**.
    - If macOS says the app "is damaged", run this once in Terminal and open it again: `xattr -dr com.apple.quarantine /Applications/SC-Remote.app`

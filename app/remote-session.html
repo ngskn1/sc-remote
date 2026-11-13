@@ -247,6 +247,9 @@ async function onControl(c, m) {
   if (!token && !['hello', 'ok', 'denied', 'bye'].includes(m.t)) return;
   switch (m.t) {
     case 'hello': {
+      // answer only the newest hello: a PC that sent two (SC-Remote up to 1.5.0 now and then did) checks the
+      // answer against its last one
+      const seq = c.helloSeq = (c.helloSeq || 0) + 1;
       hostName = m.name || '';
       overlay('Signing in…');
       const prefs = { fps: q.fps, sharp: q.sharp, codec: q.codec, clip: q.clip };
@@ -274,7 +277,8 @@ async function onControl(c, m) {
       if (!mine || !theirs || !/^[0-9a-f]{64}$/.test(m.nonce || '') || !/^[0-9a-f]{16,128}$/.test(m.salt || '')) return stop(t('Could not read the connection\'s security details.'));
       let p;
       try { p = await R.pakeAnswer({ password: creds.password, salt: m.salt, nonce: m.nonce, B: m.pake, hostFp: theirs, clientFp: mine }); } catch (e) { overlay(t('Sign-in failed: ') + e.message, 'err'); return; }
-      if (c !== ctl) return;
+      if (c !== ctl || c.helloSeq !== seq || c.authSent) return;
+      c.authSent = true;
       if (!p) return stop(t('Could not read the connection\'s security details.'));
       expectProof = p.m2;
       c.send({ t: 'auth', pake: { A: p.A, m1: p.m1 }, bound: true, name: creds.me || 'remote PC', ...prefs });   // prefs include the screen you were on
@@ -781,17 +785,21 @@ async function pullItems(m, a, stale = () => false, base = null, names = null) {
     if (a.cancelled || stale()) throw new Error('cancelled');
     if (it.dir) { await R.fsMkdirRel(base, remap(it.rel)); continue; }
     const f = await R.fsOpenWriteRel(base, remap(it.rel));
-    let writes = Promise.resolve();
+    let writes = Promise.resolve(), watch = null;
     try {
       await new Promise((resolve, reject) => {
+        // a file the PC stops answering about (30 s without a word) fails, rather than waiting forever
+        let heard = Date.now(), rid = null;
+        watch = setInterval(() => { if (Date.now() - heard > 30000) { if (rid != null) reqs.delete(rid); reject(new Error(t('the PC stopped answering'))); } }, 5000);
+        const alive = () => { heard = Date.now(); };
         request({ op: 'get', path: it.path }, {
-          first: () => {},
-          chunk: d => { got += d.length; a.set(m.total ? got / m.total : 1); writes = writes.then(() => R.fsWrite(f.handle, d)); },
-          done: r => writes.then(() => (r.cancelled ? reject(new Error('cancelled')) : resolve()), reject),
+          first: alive,
+          chunk: d => { alive(); got += d.length; a.set(m.total ? got / m.total : 1); writes = writes.then(() => R.fsWrite(f.handle, d)); },
+          done: r => { alive(); writes.then(() => (r.cancelled ? reject(new Error('cancelled')) : resolve()), reject); },
           fail: reject,
-        }).then(id => { a.cancelRemote = () => fconn && fconn.send({ op: 'cancel', id }); }, reject);
+        }).then(id => { rid = id; a.cancelRemote = () => fconn && fconn.send({ op: 'cancel', id }); }, reject);
       });
-    } finally { await R.fsClose(f.handle); }
+    } finally { clearInterval(watch); await R.fsClose(f.handle); }
   }
   return R.fsJoin(base, m.roots.map(r => map[r] || r));
 }

@@ -7,7 +7,7 @@
 // The release key comes from SC_REMOTE_UPDATE_KEY (the PEM text; in GitHub Actions, the repository secret) or from
 // a file named in SC_REMOTE_UPDATE_KEY_FILE. It must match build/sc-remote/update-public.pem, which is built into
 // every copy: a release signed with any other key is refused by the app and by the service.
-// Release notes (optional, shown with the update): RELEASE_NOTES.
+// Release notes (optional, shown on the release page): RELEASE_NOTES, else "notes" in build/sc-remote/release.json.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -16,7 +16,7 @@ const { execFileSync } = require('child_process');
 const { signManifest, verifyManifest, MANIFEST_NAME } = require('../remote/update');
 
 const root = path.join(__dirname, '..');
-const { version: VERSION, repo: REPO } = require('../build/sc-remote/release.json');
+const { version: VERSION, repo: REPO, notes: NOTES } = require('../build/sc-remote/release.json');
 require('../build/remote.config.js');            // (writes build/sc-remote/update.json, as the build does)
 const publish = process.argv.includes('--publish');
 const fail = m => { console.error('release: ' + m); process.exit(1); };
@@ -56,7 +56,7 @@ const w = assets.win32;
 const manifest = {
   product: 'SC-Remote', version: VERSION, file: w.file, url: w.url, sha256: w.sha256, size: w.size,
   platforms: Object.fromEntries(Object.entries(assets).map(([k, a]) => [k, { file: a.file, url: a.url, sha256: a.sha256, size: a.size }])),
-  notes: (process.env.RELEASE_NOTES || '').trim(), date: new Date().toISOString(),
+  notes: (process.env.RELEASE_NOTES || NOTES || '').trim(), date: new Date().toISOString(),
 };
 const doc = signManifest(manifest, key);
 // the same check every installed copy makes, with the public key that is built into them

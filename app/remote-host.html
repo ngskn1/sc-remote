@@ -54,9 +54,13 @@ function onControl(conn) {
   let counted = true;
   const settled = () => { if (counted) { counted = false; waiting--; } };
   const nonce = randomHex(32);
-  let authed = false, checking = false, pake = null;
+  let authed = false, checking = false, pake = null, greeted = false;
   const timeout = setTimeout(() => { if (!authed) { settled(); conn.close(); } }, 20000);
   conn.on('open', async () => {
+    // one hello per connection: "open" has been seen twice on one connection, and two hellos (each with its own
+    // half of the sign-in) made a right password fail now and then
+    if (greeted) { R.log('control connection: "open" again (ignored)'); return; }
+    greeted = true;
     // caps.bound: sign-ins are tied to this connection; caps.proof: this PC proves it knows the password too;
     // caps.pake + pake: this PC's half of the SRP sign-in (see remote/srp.js); caps.sas: real Ctrl+Alt+Del
     // (the agent on Windows)
