@@ -70,8 +70,10 @@ ok(ps('Get-Clipboard') === 'hello from the controller', 'text sent to the PC is 
 console.log('agent log:\n' + agentLogSince());
 section('text: the PC → this app');
 ps("Set-Clipboard -Value 'hello from the PC'");
-const gotText = await until(() => app.evaluate(async ({ clipboard }) => (await clipboard.readText()) === 'hello from the PC'), 8000);
-ok(gotText, 'text copied on the PC: still on the clipboard here (one machine, so this only shows nothing broke)');
+// (this app doesn't touch the clipboard it shares with the PC here: it keeps what it was sent instead)
+const gotText = await until(() => app.evaluate(() => { const c = globalThis.__scTestClip; return !!c && c.kind === 'text' && c.data === 'hello from the PC'; }), 10000);
+ok(gotText, 'text copied on the PC arrives here: ' + JSON.stringify(await app.evaluate(() => globalThis.__scTestClip || null)));
+console.log('agent log:\n' + agentLogSince());
 
 /* ---------- files: this app → the PC (Ctrl+C here, Ctrl+V there) ---------- */
 section('files: this app → the PC');
@@ -128,6 +130,21 @@ console.log('agent log:\n' + agentLogSince());
 ok(a2.some(a => /Ready: press Ctrl\+V here/.test(a) && /second-from-the-pc/.test(a)), 'a file put on the clipboard with Set-Clipboard on the PC arrives here too');
 console.log('agent log:\n' + agentLogSince());
 await s.screenshot({ path: path.join(OUT, '3-files-from-pc.png') });
+
+// copied from Windows' own folders: not offered (the members may only fetch the user's things)
+section('files from a system folder are not offered');
+await s.evaluate(() => document.querySelectorAll('#acts .act').forEach(a => a.remove()));
+ps(`Set-Clipboard -Path 'C:\\Windows\\win.ini'`);
+await sleep(4000);
+const a3 = await acts(), logNow = agentLogSince();
+console.log('activity:', JSON.stringify(a3), '\nagent log:\n' + logNow);
+ok(!a3.some(a => /win\.ini/i.test(a)) && /not offered/.test(logNow), 'a file copied from C:\\Windows is not offered to the controller');
+
+// a picture copied on the PC
+section('picture: the PC → this app');
+ps(`Add-Type -AssemblyName System.Windows.Forms, System.Drawing; $b = New-Object System.Drawing.Bitmap 64, 48; $g = [System.Drawing.Graphics]::FromImage($b); $g.Clear([System.Drawing.Color]::OrangeRed); [System.Windows.Forms.Clipboard]::SetImage($b)`);
+const gotPic = await until(() => app.evaluate(() => { const c = globalThis.__scTestClip; return !!c && c.kind === 'image'; }), 10000);
+ok(gotPic, 'a picture copied on the PC arrives here');
 
 /* ---------- the Files panel ---------- */
 // the helper itself, run as the signed-in user (not the system account): does it see what was copied?

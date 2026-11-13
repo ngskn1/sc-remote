@@ -49,7 +49,21 @@
   #files { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 92vw); background: rgba(20,22,28,.98); border-left: 1px solid var(--line);
            z-index: 6; display: flex; flex-direction: column; }
   #files header { display: flex; align-items: center; gap: 6px; padding: 10px; border-bottom: 1px solid var(--line); }
-  #files header b { flex: 1; }
+  #files header .tabs { flex: 1; display: flex; gap: 4px; min-width: 0; }
+  #files header .tabs button { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: transparent; border-color: transparent; color: var(--muted); }
+  #files header .tabs button.on { background: #232733; border-color: var(--line); color: var(--text); font-weight: 600; }
+  #favBtn { font-size: 15px; padding: 2px 8px; } #favBtn.on { color: #f5c542; border-color: #f5c542; }
+  #places { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  #places:empty { display: none; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; max-width: 180px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 12px; font-size: 12px; cursor: pointer; background: #12141a; }
+  .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip:hover { border-color: var(--accent); } .chip.star { border-color: #5a4d1f; }
+  .chip .x { color: var(--muted); padding: 0 2px; } .chip .x:hover { color: var(--bad); }
+  .ent .go { visibility: hidden; padding: 1px 8px; font-size: 12px; } .ent:hover .go { visibility: visible; }
+  #filesFoot { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  #footText { flex: 1; min-width: 0; display: flex; gap: 4px; align-items: center; white-space: nowrap; }
+  #footText .p { min-width: 0; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; color: var(--text); }  /* long paths: cut on the left */
+  #footText a { flex: none; color: var(--accent); cursor: pointer; }
   #pathbar { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); align-items: center; }
   #path { flex: 1; min-width: 0; }
   #list { flex: 1; overflow: auto; padding: 4px 0; }
@@ -119,9 +133,14 @@
 </div></div>
 
 <div id="files" class="hidden">
-  <header><b>Files on <span id="fname"></span></b><button id="upBtn">Upload…</button><button id="closeFiles">✕</button></header>
-  <div id="pathbar"><button id="parent" title="Up one folder">↑</button><button id="homeBtn" title="Home folder">⌂</button><input id="path" spellcheck="false"></div>
+  <header>
+    <div class="tabs"><button id="tabRemote" class="on"><span id="fname"></span></button><button id="tabLocal">On this computer</button></div>
+    <button id="closeFiles">✕</button>
+  </header>
+  <div id="pathbar"><button id="parent" title="Up one folder">↑</button><button id="homeBtn" title="Home folder">⌂</button><input id="path" spellcheck="false"><button id="favBtn" class="fav" title="Add this folder to favorites">☆</button></div>
+  <div id="places"></div>
   <div id="list"></div>
+  <div id="filesFoot"><span id="footText"></span><button id="footBtn"></button></div>
   <div id="transfers"></div>
   <input type="file" id="picker" multiple class="hidden">
 </div>
@@ -532,32 +551,128 @@ async function request(msg, handlers) {
 function list(path) {
   return new Promise((resolve, reject) => request({ op: 'list', path }, { first: resolve, fail: reject }).catch(reject));
 }
+/* ---------- Files panel: two tabs (the remote PC, and this computer), favourite folders on both ---------- */
+// The remote tab lists the PC's folder (click a file: download it; ⬇ on a folder: download it all). The "this
+// computer" tab picks what to upload (click, or ⬆) and where downloads go ("Save downloads here"). ★ keeps a
+// folder in the row of shortcuts: per PC for its folders, one list for this computer's.
+let view = 'remote', remoteView = null, local = null, places = null, dlDir = null;
+let fprefs = { remoteFavs: [], localFavs: [], downloadDir: null, localDir: null };
+let prefsLoaded = null;
+const joinP = (d, n, sep) => d + (d.endsWith(sep) ? '' : sep) + n;
+const baseName = p => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
+function loadFilePrefs() {
+  return prefsLoaded || (prefsLoaded = (async () => {
+    fprefs = { ...fprefs, ...((await R.filePrefs(null).catch(() => null)) || {}) };
+    places = await R.fsPlaces().catch(() => null);
+    dlDir = fprefs.downloadDir || await R.fsDownloads();
+  })());
+}
 async function openDir(path, fallback = false) {
   try {
     const d = await list(path);
-    cwd = d.path; home = home || d.home;
+    cwd = d.path; home = home || d.home; remoteView = d;
     if (lastSavedDir !== d.path) { lastSavedDir = d.path; R.filesDir(d.path); }      // reopen here next time
-    $('path').value = d.path;
-    $('parent').disabled = !d.parent; $('parent').dataset.p = d.parent || '';
-    const rows = d.entries.map(en => {
-      const row = document.createElement('div'); row.className = 'ent';
-      const n = document.createElement('span'); n.className = 'n'; n.textContent = (en.dir ? '📁 ' : '📄 ') + en.name;
-      const s = document.createElement('span'); s.className = 's'; s.textContent = en.dir ? '' : fmtBytes(en.size);
-      row.append(n, s);
-      row.title = t(en.dir ? 'Open folder' : 'Download to this PC');
-      row.onclick = () => en.dir ? openDir(d.path + (d.path.endsWith(d.sep) ? '' : d.sep) + en.name) : download(d.path + (d.path.endsWith(d.sep) ? '' : d.sep) + en.name);
-      return row;
-    });
-    if (!rows.length) { const e = document.createElement('div'); e.className = 'ent'; e.style.color = 'var(--muted)'; e.textContent = t('Empty folder'); rows.push(e); }
-    $('list').replaceChildren(...rows);
+    if (view === 'remote') render();
   } catch (e) {
     if (fallback) return openDir('');                      // last time's folder is gone: start at home
+    toast(t('Could not open folder: ') + e.message);
+  }
+}
+async function openLocal(path, fallback = false) {
+  try {
+    const d = await R.fsList(path || null);
+    local = d;
+    if (fprefs.localDir !== d.path) { fprefs.localDir = d.path; R.filePrefs({ localDir: d.path }); }
+    if (view === 'local') render();
+  } catch (e) {
+    if (fallback) return openLocal('');
     toast(t('Could not open folder: ') + e.message);
   }
 }
 let lastSavedDir = null;
 // first time the panel opens in this session: where it was last time with this PC (or the home folder)
 async function openFirstDir() { const last = await R.filesDir(null).catch(() => null); openDir(last || '', !!last); }
+function showTab(which) {
+  view = which;
+  if (view === 'remote' && !remoteView) openFirstDir();
+  if (view === 'local' && !local) openLocal(fprefs.localDir || dlDir || '', true);
+  render();
+}
+function chip(label, p, fav) {
+  const c = document.createElement('span'); c.className = 'chip' + (fav ? ' star' : ''); c.title = p;
+  const l = document.createElement('span'); l.textContent = label; c.append(l);
+  c.onclick = () => (view === 'remote' ? openDir(p) : openLocal(p));
+  if (fav) {
+    const x = document.createElement('span'); x.className = 'x'; x.textContent = '×'; x.title = t('Remove from favorites');
+    x.onclick = e => { e.stopPropagation(); toggleFav(p); };
+    c.append(x);
+  }
+  return c;
+}
+function toggleFav(p) {
+  const key = view === 'remote' ? 'remoteFavs' : 'localFavs';
+  const favs = fprefs[key] || [];
+  fprefs[key] = favs.includes(p) ? favs.filter(x => x !== p) : [...favs, p].slice(-20);
+  R.filePrefs({ [key]: fprefs[key] });
+  render();
+}
+function entryRow(en, d) {
+  const full = joinP(d.path, en.name, d.sep), remote = view === 'remote';
+  const row = document.createElement('div'); row.className = 'ent';
+  const n = document.createElement('span'); n.className = 'n'; n.textContent = (en.dir ? '📁 ' : '📄 ') + en.name;
+  const s = document.createElement('span'); s.className = 's'; s.textContent = en.dir ? '' : fmtBytes(en.size);
+  const go = document.createElement('button'); go.className = 'go';
+  if (remote) {
+    go.textContent = '⬇'; go.title = t('Download to {0}', dlDir || '');
+    go.onclick = e => { e.stopPropagation(); en.dir ? downloadFolder(full) : download(full); };
+    row.title = en.dir ? t('Open folder') : t('Download to {0}', dlDir || '');
+    row.onclick = () => (en.dir ? openDir(full) : download(full));
+  } else {
+    const to = remoteView ? remoteView.path : t('the remote PC');
+    go.textContent = '⬆'; go.title = t('Upload to {0}', to);
+    go.onclick = e => { e.stopPropagation(); uploadFromHere(full); };
+    row.title = en.dir ? t('Open folder') : t('Upload to {0}', to);
+    row.onclick = () => (en.dir ? openLocal(full) : uploadFromHere(full));
+  }
+  row.append(n, s, go);
+  return row;
+}
+function render() {
+  const remote = view === 'remote', d = remote ? remoteView : local;
+  $('tabRemote').classList.toggle('on', remote); $('tabLocal').classList.toggle('on', !remote);
+  $('path').value = d ? d.path : '';
+  $('parent').disabled = !(d && d.parent); $('parent').dataset.p = (d && d.parent) || '';
+  const favs = (remote ? fprefs.remoteFavs : fprefs.localFavs) || [];
+  const isFav = !!d && favs.includes(d.path);
+  $('favBtn').textContent = isFav ? '★' : '☆'; $('favBtn').classList.toggle('on', isFav); $('favBtn').disabled = !d;
+  $('favBtn').title = t(isFav ? 'Remove this folder from favorites' : 'Add this folder to favorites');
+  const chips = [];
+  if (!remote && places) for (const [label, p] of [['Desktop', places.desktop], ['Documents', places.documents], ['Downloads', places.downloads]]) if (p) chips.push(chip(t(label), p, false));
+  for (const p of favs) chips.push(chip('★ ' + baseName(p), p, true));
+  $('places').replaceChildren(...chips);
+  const rows = d ? d.entries.map(en => entryRow(en, d)) : [];
+  if (d && !rows.length) { const e = document.createElement('div'); e.className = 'ent'; e.style.color = 'var(--muted)'; e.textContent = t('Empty folder'); rows.push(e); }
+  $('list').replaceChildren(...rows);
+  // the bottom line: where things go
+  const ft = $('footText'), fb = $('footBtn');
+  ft.replaceChildren(); fb.disabled = false;
+  const line = (label, p) => {           // "label <path>": the path cut on the left when long; whole in the tooltip
+    const l = document.createElement('span'); l.textContent = label;
+    const v = document.createElement('span'); v.className = 'p'; v.textContent = '\u200e' + p + '\u200e';
+    ft.append(l, v); ft.title = label + ' ' + p;
+  };
+  if (remote) {
+    line(t('Downloads go to'), dlDir || '…');
+    const ch = document.createElement('a'); ch.textContent = t('Change'); ch.onclick = () => { showTab('local'); if (dlDir) openLocal(dlDir); };
+    ft.append(ch);
+    fb.textContent = t('Upload…'); fb.onclick = () => $('picker').click();
+  } else {
+    if (remoteView) line(t('Uploads go to'), `${remoteView.path} (${hostLabel()})`);
+    const here = local && dlDir === local.path;
+    fb.textContent = here ? t('✓ Downloads are saved here') : t('Save downloads here'); fb.disabled = here || !local;
+    fb.onclick = () => { if (!local) return; dlDir = fprefs.downloadDir = local.path; R.filePrefs({ downloadDir: local.path }); render(); };
+  }
+}
 function transferRow(label) {
   const el = document.createElement('div'); el.className = 'tr';
   const top = document.createElement('div'); top.className = 'top';
@@ -573,7 +688,8 @@ async function download(path) {
   let handle = null, outPath = null, got = 0, size = 0, writes = Promise.resolve(), id = null, cancelled = false;
   ui.act.onclick = () => { cancelled = true; if (fconn && id) fconn.send({ op: 'cancel', id }); };
   try {
-    const dir = await R.fsDownloads();
+    await loadFilePrefs();
+    const dir = dlDir || await R.fsDownloads();
     await new Promise((resolve, reject) => {
       request({ op: 'get', path }, {
         first: async m => { size = m.size; const f = await R.fsOpenWrite(dir, m.name); handle = f.handle; outPath = f.path; },
@@ -655,13 +771,16 @@ async function pushWalk(w, dest, a, stale = () => false) {
 }
 
 // fetch remote files/folders (as described by the remote PC) into a fresh staging folder here
-async function pullItems(m, a, stale = () => false) {
-  const base = await R.fsStage();
+// (base, names: into that folder on this PC, with the top-level items renamed as given)
+async function pullItems(m, a, stale = () => false, base = null, names = null) {
+  base = base || await R.fsStage();
+  const map = {}; if (names) m.roots.forEach((r, i) => { map[r] = names[i]; });
+  const remap = rel => { const i = rel.indexOf('/'); const top = i < 0 ? rel : rel.slice(0, i); return (map[top] || top) + (i < 0 ? '' : rel.slice(i)); };
   let got = 0;
   for (const it of m.items) {
     if (a.cancelled || stale()) throw new Error('cancelled');
-    if (it.dir) { await R.fsMkdirRel(base, it.rel); continue; }
-    const f = await R.fsOpenWriteRel(base, it.rel);
+    if (it.dir) { await R.fsMkdirRel(base, remap(it.rel)); continue; }
+    const f = await R.fsOpenWriteRel(base, remap(it.rel));
     let writes = Promise.resolve();
     try {
       await new Promise((resolve, reject) => {
@@ -674,7 +793,26 @@ async function pullItems(m, a, stale = () => false) {
       });
     } finally { await R.fsClose(f.handle); }
   }
-  return R.fsJoin(base, m.roots);
+  return R.fsJoin(base, m.roots.map(r => map[r] || r));
+}
+
+// Files panel: a whole folder from the remote PC into the download folder
+async function downloadFolder(p) {
+  await loadFilePrefs();
+  const dir = dlDir;
+  const a = activity(t('⬇ Downloading {0}…', baseName(p)));
+  try {
+    const w = await rpc({ op: 'walk', paths: [p] });
+    const names = await R.fsUnique(dir, w.roots);
+    await pullItems(w, a, () => false, dir, names);
+    a.done(t('⬇ Downloaded {0} to {1}', describe({ ...w, roots: names }), dir));
+  } catch (e) { e.message === 'cancelled' ? a.fail(t('Download cancelled')) : a.fail(t('Download failed: ') + e.message); }
+}
+// "this computer" tab: send a file or folder into the folder open on the remote tab
+async function uploadFromHere(p) {
+  if (!cwd) await openDir('');
+  if (!cwd) return;
+  await uploadInto([p], cwd);
 }
 
 // Ctrl+C on this PC → files go to the remote PC and onto its clipboard
@@ -730,12 +868,21 @@ async function dropOnRemote(paths, x, y) {
   } catch (e) { e.message === 'cancelled' ? a.fail(t('Cancelled')) : a.fail(t('Failed: ') + e.message); }
 }
 
-$('filesBtn').onclick = () => { $('files').classList.toggle('hidden'); if (!$('files').classList.contains('hidden') && !cwd) openFirstDir(); };
+$('filesBtn').onclick = async () => {
+  $('files').classList.toggle('hidden');
+  if ($('files').classList.contains('hidden')) return;
+  await loadFilePrefs();
+  if (!cwd) openFirstDir();
+  render();
+};
 $('closeFiles').onclick = () => { $('files').classList.add('hidden'); video.focus(); };
-$('parent').onclick = () => $('parent').dataset.p && openDir($('parent').dataset.p);
-$('homeBtn').onclick = () => openDir(home || '');
-$('path').addEventListener('keydown', e => { if (e.key === 'Enter') openDir($('path').value); });
-$('upBtn').onclick = () => $('picker').click();
+$('tabRemote').onclick = () => showTab('remote');
+$('tabLocal').onclick = () => showTab('local');
+const openHere = p => (view === 'remote' ? openDir(p) : openLocal(p));
+$('parent').onclick = () => $('parent').dataset.p && openHere($('parent').dataset.p);
+$('homeBtn').onclick = () => (view === 'remote' ? openDir(home || '') : openLocal(''));
+$('path').addEventListener('keydown', e => { if (e.key === 'Enter') openHere($('path').value); });
+$('favBtn').onclick = () => { const d = view === 'remote' ? remoteView : local; if (d) toggleFav(d.path); };
 $('picker').onchange = () => {
   const paths = [...$('picker').files].map(f => R.pathForFile(f)).filter(Boolean);
   $('picker').value = '';
@@ -770,7 +917,7 @@ addEventListener('drop', async e => {
   creds = await R.creds();
   if (!creds) { overlay('Nothing to connect to.', 'err'); return; }
   $('who').textContent = creds.mode === 'lab' ? creds.name : (creds.name || creds.id.replace(/(\d{3})(?=\d)/g, '$1 '));
-  $('fname').textContent = creds.mode === 'lab' ? creds.pc : (creds.name || creds.id);
+  $('fname').textContent = t('On {0}', creds.mode === 'lab' ? creds.pc : (creds.name || creds.id));
   if (creds.mode === 'lab') window.__net = { server: creds.settings.server, turn: creds.settings.turn };
   connect();
 })();

@@ -109,8 +109,11 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
       const st = pakes.get(pake.id);
       pakes.delete(pake.id);
       if (!st || st.key !== key) return { ok: false, code: 'bad', reason: 'Bad request' };     // (or the password changed meanwhile)
-      proof = srp.hostFinish(key, st.b, st.B, pake.A, pake.m1, { nonce: nonceHex, salt, hostFp: bind.hostFp, clientFp: bind.clientFp });
+      const c = { nonce: nonceHex, salt, hostFp: bind.hostFp, clientFp: bind.clientFp };
+      proof = srp.hostFinish(key, st.b, st.B, pake.A, pake.m1, c);
       ok = !!proof;
+      // (for telling a mistyped password from a sign-in that went wrong: the app logs the same digest; nothing secret)
+      if (!ok) log(`sign-in: the proof did not match (connection ${srp.contextDigest(c)}, half ${String(st.B).slice(0, 8)})`);
     } else {
       // apps from before the SRP sign-in (ScreenShare 2.3/2.4, SC-Remote up to 1.3.1): a signed nonce
       if (!/^[0-9a-f]{64}$/.test(macHex || '')) return { ok: false, code: 'bad', reason: 'Bad request' };
@@ -360,6 +363,10 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   // reports switches, and while one is up a second helper captures it (the normal capture only sees the user's desktop).
   const helperExe = () => process.env.SCREENSHARE_HELPER || (lab.helper && fs.existsSync(lab.helper) ? lab.helper : null);
   injector.helperPath = () => (AGENT && process.platform === 'win32' ? helperExe() : null);
+  // Windows shows the system account (the agent) an empty clipboard: read it as the signed-in user instead
+  if (AGENT && process.platform === 'win32') {
+    clipFiles.configure({ asUser: () => { const exe = helperExe(); return exe && !exe.endsWith('.js') ? [exe, ['as-user']] : null; }, log });
+  }
   function spawnHelper(mode) {
     const exe = helperExe();
     if (!exe) return null;
@@ -721,6 +728,10 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
       new Promise(r => { timer = setTimeout(() => { logOnce(`clipboard: ${what} did not answer within ${ms} ms`); r(fallback); }, ms); })]).finally(() => clearTimeout(timer));
   };
   async function readClipboard(withImage) {
+    // the agent on Windows: everything through the helper running as the signed-in user (null: not in use)
+    const all = await timed(clipFiles.readAll(withImage).catch(e => { logOnce('reading the clipboard: ' + e.message); return false; }), 6000, 'reading the clipboard', false);
+    if (all) return all;
+    if (all === false) return { text: '', png: null, files: [] };
     const text = await timed(clipboard.readText(), 1500, 'reading text', '');
     let png = null;
     if (withImage && await timed(clipboard.has('image/png'), 1500, 'checking for an image', false)) {
@@ -743,7 +754,13 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
       const sig = files.join('\n');
       if (sig !== lastClip.files) {
         lastClip.files = sig;
-        if (files.length) { log(`clipboard: ${files.length} file(s) copied here`); lastClip.text = text; clipOffered = files; broadcastClip({ kind: 'files', paths: files }); return; }
+        if (files.length) {
+          const offered = files.filter(offerable);
+          log(`clipboard: ${files.length} file(s) copied here` + (offered.length < files.length ? ` (${files.length - offered.length} in system folders, not offered)` : ''));
+          lastClip.text = text; clipOffered = offered;
+          if (offered.length) broadcastClip({ kind: 'files', paths: offered });
+          return;
+        }
       }
       if (files.length) return;                     // the text then is just the paths: don't send it as text
       if (png) {
@@ -870,11 +887,28 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
     }
   }
   const within = (p, root) => { const rel = path.relative(root, p); return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel)); };
+  // What someone copied at the PC may be fetched by the members, except from Windows' and programs' own folders,
+  // other people's profiles or a whole drive. (The list of copied files comes from a program running as that
+  // person, so it is only as trustworthy as they are: it must not reach what the system account alone can read.)
+  function offerable(p) {
+    if (!(AGENT && process.platform === 'win32')) return true;
+    const real = realOr(path.resolve(String(p)));
+    if (!real || path.parse(real).root === real) return false;
+    const sys = (process.env.SystemDrive || 'C:') + '\\';
+    const deny = [process.env.SystemRoot || path.join(sys, 'Windows'), process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.ProgramW6432,
+      process.env.ProgramData || path.join(sys, 'ProgramData'), path.join(sys, 'Recovery'), path.join(sys, 'Boot')].filter(Boolean).map(d => realOr(d) || d);
+    if (deny.some(d => within(real, d))) return false;
+    const top = real.slice(path.parse(real).root.length).split(path.sep)[0].toLowerCase();
+    if (['system volume information', '$recycle.bin', 'config.msi', '$windows.~bt', '$windows.~ws'].includes(top)) return false;
+    const home = realOr(userDirs().home), users = home && path.dirname(home);
+    if (users && within(real, users) && !within(real, home)) return false;      // C:\Users itself, or someone else's profile
+    return true;
+  }
   function allowedPath(p, write) {
     const real = realish(path.resolve(p));
     if (!real) return false;
     const roots = [userDirs().home, stageRoot()].map(realOr).filter(Boolean);
-    if (!write) roots.push(...clipOffered.map(realOr).filter(Boolean));
+    if (!write) roots.push(...clipOffered.filter(offerable).map(realOr).filter(Boolean));
     return roots.some(r => within(real, r));
   }
   function guard(e, p, write = false) {
@@ -1115,7 +1149,9 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   h('session:pake', async (e, q) => {
     if (!sessionCreds.has(e.sender.id) || !q || typeof q.password !== 'string' || !/^[0-9a-f]{16,128}$/.test(q.salt || '') || !/^[0-9a-f]{64}$/.test(q.nonce || '')) return null;
     const key = await new Promise((res, rej) => crypto.pbkdf2(q.password, Buffer.from(q.salt, 'hex'), PBKDF2_ROUNDS, 32, 'sha256', (err, k) => (err ? rej(err) : res(k))));
-    return srp.clientAnswer(key, q.B, { nonce: q.nonce, salt: q.salt, hostFp: String(q.hostFp), clientFp: String(q.clientFp) });
+    const c = { nonce: q.nonce, salt: q.salt, hostFp: String(q.hostFp), clientFp: String(q.clientFp) };
+    log(`sign-in: answering (connection ${srp.contextDigest(c)}, half ${String(q.B).slice(0, 8)})`);
+    return srp.clientAnswer(key, q.B, c);
   });
   h('session:signed-in', (e, password) => {
     const c = sessionCreds.get(e.sender.id);
@@ -1319,7 +1355,8 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   const testSharedClip = !!(process.env.SCREENSHARE_TEST && process.env.SCREENSHARE_TEST_CONTROLLER_NO_CLIPBOARD);
   h('clip:watch', (e, on) => (testSharedClip && !isEngine(e.sender) ? null : watchClipboard(e.sender, !!on)));
   h('clip:set', async (e, payload) => {
-    if (testSharedClip && !isEngine(e.sender)) return;
+    // (what would have been put on the clipboard, for the test to look at)
+    if (testSharedClip && !isEngine(e.sender)) { globalThis.__scTestClip = { kind: payload && payload.kind, data: payload && payload.kind === 'text' ? payload.data : null, at: Date.now() }; return; }
     try { await setClipboard(payload || {}); if (payload && payload.kind === 'files') log(`clipboard: ${payload.paths.length} item(s) ready to paste`); }
     catch (e) { log(`clipboard: could not set ${payload && payload.kind}: ${e.message}`); throw e; }
   });

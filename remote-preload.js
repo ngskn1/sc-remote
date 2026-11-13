@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('remoteApp', {
   onUpdate: cb => ipcRenderer.on('update:changed', (_e, u) => cb(u)),
   signedIn: password => inv('session:signed-in', password),
   filesDir: dir => inv('session:files-dir', dir),
+  filePrefs: patch => inv('session:file-prefs', patch),
+  fsPlaces: () => inv('fs:places'),
   onSavedChanged: cb => ipcRenderer.on('remote:saved-changed', () => cb()),
   onClosing: cb => ipcRenderer.on('session:closing', () => cb()),
   setTitle: t => inv('session:set-title', t),

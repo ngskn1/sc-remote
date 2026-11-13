@@ -4,6 +4,11 @@
 //                                         and reports which desktop has the input ("D Default", "D Winlogon", …)
 //   ScreenShareRemoteHelper.exe capture   JPEG frames of the input desktop (for the sign-in, lock and UAC screens,
 //                                         which the normal screen capture can't see)
+//   ScreenShareRemoteHelper.exe as-user <program> [args…]
+//                                         runs a program as the person signed in at the screen, with this helper's
+//                                         stdin/stdout/stderr, and ends it when this helper ends. (Windows hides
+//                                         the user's clipboard from the system account: the clipboard is read
+//                                         through a program started this way.) Exit code 3: nobody is signed in.
 //
 // Both follow the *input desktop*: Windows shows the sign-in screen, the lock screen and UAC prompts on a separate
 // secure desktop ("Winlogon"). Only the system account may open it, and a thread has to be moved onto a desktop
@@ -122,6 +127,74 @@ static class Input {
   }
 }
 
+// as-user: CreateProcessAsUser with the signed-in user's token
+static class AsUser {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct STARTUPINFO { public int cb; public string lpReserved, lpDesktop, lpTitle; public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+                       public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError; }
+  [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+  [StructLayout(LayoutKind.Sequential)] struct BASIC_LIMIT { public long PerProcessUserTimeLimit, PerJobUserTimeLimit; public uint LimitFlags; public UIntPtr MinimumWorkingSetSize, MaximumWorkingSetSize;
+                                                            public uint ActiveProcessLimit; public UIntPtr Affinity; public uint PriorityClass, SchedulingClass; }
+  [StructLayout(LayoutKind.Sequential)] struct IO_COUNTERS { public ulong a, b, c, d, e, f; }
+  [StructLayout(LayoutKind.Sequential)] struct EXTENDED_LIMIT { public BASIC_LIMIT Basic; public IO_COUNTERS Io; public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed; }
+  [DllImport("kernel32.dll")] static extern uint WTSGetActiveConsoleSessionId();
+  [DllImport("kernel32.dll")] static extern bool ProcessIdToSessionId(uint pid, out uint session);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentProcessId();
+  [DllImport("wtsapi32.dll", SetLastError = true)] static extern bool WTSQueryUserToken(uint session, out IntPtr token);
+  [DllImport("userenv.dll", SetLastError = true)] static extern bool CreateEnvironmentBlock(out IntPtr env, IntPtr token, bool inherit);
+  [DllImport("userenv.dll")] static extern bool DestroyEnvironmentBlock(IntPtr env);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern bool CreateProcessAsUser(IntPtr token, string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string dir, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+  [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int which);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(IntPtr h, uint mask, uint flags);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr CreateJobObject(IntPtr sa, string name);
+  [DllImport("kernel32.dll")] static extern bool SetInformationJobObject(IntPtr job, int cls, ref EXTENDED_LIMIT info, int size);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+  [DllImport("kernel32.dll")] static extern uint ResumeThread(IntPtr thread);
+  [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  static string Quote(string a) { return a.Length > 0 && a.IndexOfAny(new[] { ' ', '\t', '"' }) < 0 ? a : "\"" + a.Replace("\"", "\\\"") + "\""; }
+
+  public static int Run(string[] args) {
+    if (args.Length < 2) { Console.Error.WriteLine("usage: ScreenShareRemoteHelper as-user <program> [args…]"); return 2; }
+    IntPtr token;
+    // the person signed in to the session this helper runs in (SC-Remote's agent's session), else at the screen
+    uint session;
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), out session) || session == 0) session = WTSGetActiveConsoleSessionId();
+    if (!WTSQueryUserToken(session, out token)) { Console.Error.WriteLine("nobody is signed in (" + Marshal.GetLastWin32Error() + ")"); return 3; }
+    IntPtr env = IntPtr.Zero, job = IntPtr.Zero;
+    try {
+      if (!CreateEnvironmentBlock(out env, token, false)) env = IntPtr.Zero;
+      // the program gets this helper's own stdin/stdout/stderr (pipes to SC-Remote)
+      IntPtr hin = GetStdHandle(-10), hout = GetStdHandle(-11), herr = GetStdHandle(-12);
+      foreach (IntPtr h in new[] { hin, hout, herr }) SetHandleInformation(h, 1, 1);           // HANDLE_FLAG_INHERIT
+      STARTUPINFO si = new STARTUPINFO();
+      si.cb = Marshal.SizeOf(typeof(STARTUPINFO)); si.lpDesktop = @"winsta0\default";
+      si.dwFlags = 0x100; si.hStdInput = hin; si.hStdOutput = hout; si.hStdError = herr;       // STARTF_USESTDHANDLES
+      StringBuilder cmd = new StringBuilder();
+      for (int i = 1; i < args.Length; i++) { if (i > 1) cmd.Append(' '); cmd.Append(Quote(args[i])); }
+      PROCESS_INFORMATION pi;
+      // suspended until it's in a job that ends it with this helper (KILL_ON_JOB_CLOSE)
+      if (!CreateProcessAsUser(token, args[1], cmd, IntPtr.Zero, IntPtr.Zero, true, 0x00000400 | 0x08000000 | 0x00000004, env, null, ref si, out pi)) {
+        Console.Error.WriteLine("could not start it as the signed-in user (" + Marshal.GetLastWin32Error() + ")"); return 1;
+      }
+      job = CreateJobObject(IntPtr.Zero, null);
+      EXTENDED_LIMIT lim = new EXTENDED_LIMIT(); lim.Basic.LimitFlags = 0x2000;
+      SetInformationJobObject(job, 9, ref lim, Marshal.SizeOf(typeof(EXTENDED_LIMIT)));
+      AssignProcessToJobObject(job, pi.hProcess);
+      ResumeThread(pi.hThread);
+      WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
+      uint code; GetExitCodeProcess(pi.hProcess, out code);
+      CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+      return (int)code;
+    } finally {
+      if (env != IntPtr.Zero) DestroyEnvironmentBlock(env);
+      CloseHandle(token);
+    }
+  }
+}
+
 static class Program {
   static readonly object outLock = new object();
   static void Say(string line) { lock (outLock) { Console.Out.WriteLine(line); Console.Out.Flush(); } }
@@ -131,8 +204,9 @@ static class Program {
     try {
       if (mode == "input") return RunInput();
       if (mode == "capture") return RunCapture();
+      if (mode == "as-user") return AsUser.Run(args);
     } catch (Exception e) { Console.Error.WriteLine(e.ToString()); return 1; }
-    Console.Error.WriteLine("usage: ScreenShareRemoteHelper input|capture");
+    Console.Error.WriteLine("usage: ScreenShareRemoteHelper input|capture|as-user");
     return 2;
   }
 

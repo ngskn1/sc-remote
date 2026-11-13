@@ -66,6 +66,7 @@ function clientSecret(A, B, x, a, G = GROUP) {
 }
 
 const context = c => [c.nonce, c.salt, c.hostFp, c.clientFp].join('|');
+const contextDigest = c => crypto.createHash('sha256').update(context(c)).digest('hex').slice(0, 12);
 function proofs(S, A, B, c, G = GROUP) {
   const K = H(G, pad(S, G));
   const mac = text => crypto.createHmac('sha256', K).update(text).digest('hex');
@@ -105,5 +106,5 @@ function clientAnswer(key, Bhex, c) {
   return { A: hexOf(A), m1: p.m1, m2: p.m2 };
 }
 
-module.exports = { GROUP, hostStart, hostFinish, clientAnswer,
+module.exports = { GROUP, hostStart, hostFinish, clientAnswer, contextDigest,
                    math: { modpow, verifier, hostPublic, clientPublic, hostSecret, clientSecret, kOf, uOf, int, pad } };

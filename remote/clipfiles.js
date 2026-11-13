@@ -68,9 +68,9 @@ const WIN_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = [Text.Encoding]::UTF8
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @'
-using System; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Text; using System.Threading;
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
+using System; using System.Collections.Generic; using System.IO; using System.Runtime.InteropServices; using System.Text; using System.Threading;
 public static class SCClip {
   [DllImport("user32.dll", SetLastError = true)] static extern bool OpenClipboard(IntPtr owner);
   [DllImport("user32.dll", SetLastError = true)] static extern bool CloseClipboard();
@@ -85,7 +85,7 @@ public static class SCClip {
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool GlobalUnlock(IntPtr h);
   [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GlobalFree(IntPtr h);
   [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern uint DragQueryFile(IntPtr drop, uint i, StringBuilder name, uint size);
-  const uint CF_HDROP = 15, GMEM_MOVEABLE = 2;
+  const uint CF_HDROP = 15, CF_UNICODETEXT = 13, GMEM_MOVEABLE = 2;
   // a hidden window to own the clipboard while setting it (Windows refuses SetClipboardData without an owner)
   static System.Windows.Forms.NativeWindow owner;
   static IntPtr Owner() {
@@ -113,6 +113,62 @@ public static class SCClip {
       seq = s; last = list.ToArray();
       return last;
     } finally { CloseClipboard(); }
+  }
+  // Everything that was copied, as one line of JSON: {"seq":n,"files":[…],"text":"…","png":"<base64>"|null}.
+  // Used when this runs as the signed-in user for SC-Remote's agent: Windows shows the system account an empty
+  // clipboard. The picture (costly) only when asked for and the clipboard changed since the caller's "have".
+  static uint tseq = 0; static string ttext = "";
+  static string Text() {
+    uint s = GetClipboardSequenceNumber();
+    if (s != 0 && s == tseq) return ttext;
+    string t = "";
+    if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+      Open();
+      try {
+        IntPtr h = GetClipboardData(CF_UNICODETEXT);
+        if (h != IntPtr.Zero) { IntPtr p = GlobalLock(h); if (p != IntPtr.Zero) { try { t = Marshal.PtrToStringUni(p); } finally { GlobalUnlock(h); } } }
+      } finally { CloseClipboard(); }
+    }
+    tseq = s; ttext = t == null ? "" : t;
+    return ttext;
+  }
+  static string Png() {
+    if (!System.Windows.Forms.Clipboard.ContainsImage()) return null;
+    using (var img = System.Windows.Forms.Clipboard.GetImage()) {
+      if (img == null) return null;
+      using (var ms = new MemoryStream()) {
+        img.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+        return ms.Length > 20 * 1024 * 1024 ? null : Convert.ToBase64String(ms.ToArray());
+      }
+    }
+  }
+  // (no backslashes here: this text passes through JavaScript and PowerShell quoting)
+  const char Q = (char)34, BS = (char)92;
+  static void Json(StringBuilder o, string v) {
+    if (v == null) { o.Append("null"); return; }
+    o.Append(Q);
+    foreach (char c in v) {
+      if (c == Q || c == BS) o.Append(BS).Append(c);
+      else if (c < (char)32 || c == (char)0x2028 || c == (char)0x2029) o.Append(BS).Append('u').Append(((int)c).ToString("x4"));
+      else o.Append(c);
+    }
+    o.Append(Q);
+  }
+  static void Key(StringBuilder o, string k) { o.Append(Q).Append(k).Append(Q).Append(':'); }
+  public static string Read(bool image, uint have) {
+    uint s = GetClipboardSequenceNumber();
+    var o = new StringBuilder("{");
+    Key(o, "seq"); o.Append(s); o.Append(',');
+    Key(o, "files"); o.Append('[');
+    string[] files = Get();
+    for (int i = 0; i < files.Length; i++) { if (i > 0) o.Append(','); Json(o, files[i]); }
+    o.Append("],");
+    Key(o, "text"); Json(o, files.Length > 0 ? "" : Text()); o.Append(',');
+    string png = null;
+    if (image && files.Length == 0 && s != have) { try { png = Png(); } catch { } }
+    Key(o, "png"); Json(o, png);
+    o.Append('}');
+    return o.ToString();
   }
   static IntPtr Global(byte[] b) {
     IntPtr h = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)b.Length);
@@ -142,7 +198,10 @@ while ($true) {
   $l = [Console]::In.ReadLine()
   if ($null -eq $l) { break }
   try {
-    if ($l -eq 'GET') {
+    if ($l.StartsWith('READ ')) {
+      $a = $l.Split(' ')
+      [Console]::Out.WriteLine('OK ' + [SCClip]::Read($a[1] -eq '1', [uint32]$a[2]))
+    } elseif ($l -eq 'GET') {
       [Console]::Out.WriteLine('OK ' + (ConvertTo-Json -Compress -InputObject @([SCClip]::Get())))
     } elseif ($l.StartsWith('SET ')) {
       $paths = [string[]]@(foreach ($p in (ConvertFrom-Json $l.Substring(4))) { [string]$p })
@@ -155,11 +214,31 @@ while ($true) {
   [Console]::Out.Flush()
 }`;
 
-let win = null;
+// SC-Remote's agent runs as the system account, and Windows shows that account an empty clipboard (its own copies
+// do reach the user). So for the agent the helper runs as the person signed in, started by SC-Remote's helper
+// program ("as-user"): configure({ asUser: () => [helper.exe, ['as-user']] | null, log }).
+let conf = { asUser: null, log: () => {} };
+function configure(c) { conf = { ...conf, ...c }; stop(); }
+const PS_ARGS = () => ['-NoProfile', '-NonInteractive', '-Sta', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(WIN_SCRIPT, 'utf16le').toString('base64')];
+let win = null, winDownUntil = 0;
 function winHelper() {
   if (win) return win;
-  const proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Sta', '-ExecutionPolicy', 'Bypass',
-    '-EncodedCommand', Buffer.from(WIN_SCRIPT, 'utf16le').toString('base64')], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+  const launcher = conf.asUser && conf.asUser();
+  if (launcher && Date.now() < winDownUntil) throw new Error('clipboard helper unavailable (nobody signed in?)');
+  const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const [cmd, args] = launcher ? [launcher[0], [...launcher[1], ps, ...PS_ARGS()]] : ['powershell.exe', PS_ARGS()];
+  const proc = spawn(cmd, args, { stdio: ['pipe', 'pipe', launcher ? 'pipe' : 'ignore'], windowsHide: true });
+  const started = Date.now();
+  if (launcher) {
+    let err = '';
+    proc.stderr.setEncoding('utf8');
+    proc.stderr.on('data', d => { err = (err + d).slice(-500); });
+    proc.on('exit', code => {
+      // nobody signed in (3), or it could not start: try again a little later rather than every half second
+      if (Date.now() - started < 15000) winDownUntil = Date.now() + 10000;
+      conf.log(`clipboard helper (as the signed-in user) ended: ${code}${err.trim() ? ' — ' + err.trim() : ''}`);
+    });
+  }
   const queue = [];
   let buf = '', resolveReady;
   const ready = new Promise(r => { resolveReady = r; setTimeout(() => r(false), 20000); });
@@ -181,7 +260,7 @@ function winHelper() {
     if (!(await ready)) throw new Error('clipboard helper unavailable');
     return new Promise((resolve, reject) => { queue.push({ resolve, reject }); proc.stdin.write(line + '\n'); });
   };
-  win = { ask, proc };
+  win = { ask, proc, asUser: !!launcher };
   return win;
 }
 
@@ -201,6 +280,21 @@ async function writeFiles(paths) {
   if (process.platform === 'win32') return winHelper().ask('SET ' + JSON.stringify(paths));
   throw new Error('not supported on this OS');
 }
+// Everything copied (files, text, picture) through the helper, when it runs as the signed-in user; else null
+// (the caller reads the clipboard itself). The picture is only sent again when the clipboard changed.
+let shot = { seq: -1, png: null };
+async function readAll(withImage) {
+  if (process.platform !== 'win32' || !(conf.asUser && conf.asUser())) return null;
+  const r = await winHelper().ask(`READ ${withImage ? 1 : 0} ${withImage ? Math.max(shot.seq, 0) : 0}`);
+  if (!r || typeof r !== 'object') return null;
+  let png = null;
+  if (withImage) {
+    if (r.png) shot = { seq: r.seq, png: Buffer.from(r.png, 'base64') };
+    else if (r.seq !== shot.seq) shot = { seq: r.seq, png: null };
+    png = shot.png;
+  }
+  return { text: typeof r.text === 'string' ? r.text : '', png, files: Array.isArray(r.files) ? r.files.map(String) : [] };
+}
 function stop() { if (win) { try { win.proc.stdin.end(); win.proc.kill(); } catch {} win = null; } }
 
-module.exports = { readFiles, writeFiles, stop, parseUris, parsePlistPaths, plistOf };
+module.exports = { readFiles, writeFiles, readAll, configure, stop, parseUris, parsePlistPaths, plistOf, WIN_SCRIPT };
