@@ -51,7 +51,9 @@ module.exports = {
   // the app once (System Settings › Privacy & Security › Open Anyway): see windows/GUIDE.md.
   mac: {
     target: [{ target: 'dmg', arch: ['universal'] }], identity: '-', hardenedRuntime: false,
-    category: 'public.app-category.utilities', ...(fs.existsSync(icon) ? { icon } : {}),
+    // (a Mac needs an icon of 512×512 or more: until build/sc-remote/icon.png exists, a 1024-px redraw of
+    //  ScreenShare's build/icon.png, the picture the other systems show for now)
+    category: 'public.app-category.utilities', icon: fs.existsSync(icon) ? icon : path.join(__dirname, 'sc-remote', 'icon-placeholder.png'),
   },
   dmg: { artifactName: 'SC-Remote-${version}-mac.dmg' },
   nsis: {
