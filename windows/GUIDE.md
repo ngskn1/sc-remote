@@ -8,8 +8,8 @@ SC-Remote is the remote-desktop-only edition of ScreenShare, for the group's Win
 
 | File | What it is |
 |---|---|
-| `SC-Remote-Setup-1.5.1.exe` | Windows 10/11 installer: the app, plus the background service that makes the PC reachable. |
-| `SC-Remote-1.5.1-mac.dmg` | Mac (Intel and Apple Silicon, macOS 12 or newer): connects to other PCs. The Mac itself can't be controlled. |
+| `SC-Remote-Setup-1.5.2.exe` | Windows 10/11 installer: the app, plus the background service that makes the PC reachable. |
+| `SC-Remote-1.5.2-mac.dmg` | Mac (Intel and Apple Silicon, macOS 12 or newer): connects to other PCs. The Mac itself can't be controlled. |
 | `SC-Remote-x86_64.AppImage` | Linux (64-bit): connects to other PCs, and can be controlled while someone is signed in. |
 
 All three are on [the Releases page](https://github.com/ngskn1/sc-remote/releases/latest), always in their newest version.
@@ -37,7 +37,7 @@ The installer also does the following:
 
 **PCs you only connect from** (your own laptop, say) use the same installer. Untick **Allow remote access to this PC** and click Save. The service then stays idle and nobody can connect to that PC.
 
-**Silent install** (`SC-Remote-Setup-1.5.1.exe /S`) skips the settings window, and remote access stays off. To set it up later, open the app on that PC and click **Configurar o acesso remoto…** (Set up remote access…).
+**Silent install** (`SC-Remote-Setup-1.5.2.exe /S`) skips the settings window, and remote access stays off. To set it up later, open the app on that PC and click **Configurar o acesso remoto…** (Set up remote access…).
 
 ## 2. Connecting
 
@@ -140,7 +140,7 @@ If any step fails, send me the logs from section 5.
 
 ### On a Mac (connects only)
 
-1. Download `SC-Remote-1.5.1-mac.dmg`, open it and drag **SC-Remote** into **Applications**.
+1. Download `SC-Remote-1.5.2-mac.dmg`, open it and drag **SC-Remote** into **Applications**.
 2. Open SC-Remote. The first time, macOS refuses ("Apple could not verify…"), because the app isn't registered with Apple (that costs US$99 a year). Click **Done**, then go to **System Settings › Privacy & Security**, scroll down to the message about SC-Remote and click **Open Anyway**. Confirm with your Mac's password. From then on it opens normally.
    - On macOS 14 or older you can instead Control-click SC-Remote in Applications and choose **Open**.
    - If macOS says the app "is damaged", run this once in Terminal and open it again: `xattr -dr com.apple.quarantine /Applications/SC-Remote.app`
@@ -161,4 +161,4 @@ If any step fails, send me the logs from section 5.
 
 Being controlled works while someone is signed in, in an X11 session (on Linux Mint: **Cinnamon**, not "Cinnamon on Wayland"). There's no service as on Windows: nobody can connect before sign-in, there's no Ctrl+Alt+Del, and while the computer is locked the other person sees the lock screen. It needs `python3`, which Mint and Ubuntu already have.
 
-**Updates.** **Reiniciar e atualizar** downloads the new AppImage, checks it the same way the Windows service does (the group's release key, and the file's fingerprint), replaces the file and restarts SC-Remote. That works when the AppImage is in a folder you can write to; otherwise the button opens the download page. The file keeps its name (`SC-Remote-x86_64.AppImage`) in every version, so **Iniciar com o computador** keeps working after updates.
+**Updates.** **Reiniciar e atualizar** downloads the new AppImage, checks it the same way the Windows service does (the group's release key, and the file's fingerprint), replaces the file and restarts SC-Remote. That works when the AppImage is in a folder you can write to; otherwise the button opens the download page. The file keeps its name (`SC-Remote-x86_64.AppImage`) in every version, so **Iniciar com o computador** keeps working after updates. Up to 1.5.1, SC-Remote stayed closed after updating itself on Linux, though the update was done: open it again and it starts the new version. The update to 1.5.2 still ends that way, because it is the old version that restarts; from 1.5.2 on it opens again by itself.

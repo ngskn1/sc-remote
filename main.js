@@ -191,7 +191,9 @@ ipcMain.handle('encoder:set', (_e, value) => {
 // because the unpacked copy they run from is removed when the app exits.
 ipcMain.handle('app:restart', () => {
   const outer = process.env.PORTABLE_EXECUTABLE_FILE || process.env.APPIMAGE;
-  app.relaunch(outer ? { execPath: outer, args: [] } : {});
+  // (an AppImage is unmounted when the app exits, so it is started again from outside: remote/relaunch.js)
+  if (process.env.APPIMAGE) require('./remote/relaunch').relaunchAfterExit(process.env.APPIMAGE);
+  else app.relaunch(outer ? { execPath: outer, args: [] } : {});
   cleanupSync();
   app.exit(0);
 });

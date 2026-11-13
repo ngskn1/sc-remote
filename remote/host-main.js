@@ -599,7 +599,7 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
       fs.renameSync(tmp, target);
       try { fs.mkdirSync(path.dirname(update.stateFile), { recursive: true }); fs.writeFileSync(update.stateFile, JSON.stringify({ state: 'done', version: upd.version, at: new Date().toISOString() })); } catch {}
       log('updated the AppImage to ' + upd.version + ': restarting');
-      app.relaunch({ execPath: target, args: ['--updated'] });
+      require('./relaunch').relaunchAfterExit(target, ['--updated']);
       setTimeout(() => app.exit(0), 300);
     } catch (e) {
       log('update failed: ' + e.message);
