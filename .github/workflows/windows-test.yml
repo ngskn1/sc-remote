@@ -1,0 +1,36 @@
+# Windows end-to-end check of SC-Remote: install it (with its service), connect from a second copy of the app on the
+# same PC, and copy files and text both ways (test/windows/clipboard.mjs). Run it from the Actions tab.
+name: SC-Remote Windows test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run dist:remote
+      - name: Install SC-Remote (silently, as the release would be)
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist-remote\SC-Remote-Setup-*.exe | Select-Object -First 1
+          Start-Process $setup.FullName -ArgumentList '/S' -Wait
+          sc.exe query SCRemote
+          Get-ChildItem 'C:\Program Files\SC-Remote' | Select-Object -First 5
+      - name: Connect and copy files both ways
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: |
+          npm install --no-save playwright@1.56.1
+          node test/windows/clipboard.mjs
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-output
+          path: test-output
