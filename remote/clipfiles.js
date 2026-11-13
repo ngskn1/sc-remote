@@ -60,30 +60,94 @@ function writeMac(paths) {
 }
 
 /* ---------------- Windows ---------------- */
+// The file list on the Windows clipboard (CF_HDROP), read and written with the plain Win32 clipboard functions.
+// Not .NET's Clipboard class: that goes through OLE, which calls into whichever program owns the clipboard over
+// COM. Between the system account (SC-Remote's agent) and the signed-in user's programs (Explorer) those calls
+// are refused, so copying files failed both ways. Win32 calls involve no COM: Windows itself hands the data over.
 const WIN_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = [Text.Encoding]::UTF8
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @'
+using System; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Text; using System.Threading;
+public static class SCClip {
+  [DllImport("user32.dll", SetLastError = true)] static extern bool OpenClipboard(IntPtr owner);
+  [DllImport("user32.dll", SetLastError = true)] static extern bool CloseClipboard();
+  [DllImport("user32.dll", SetLastError = true)] static extern bool EmptyClipboard();
+  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetClipboardData(uint format, IntPtr data);
+  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr GetClipboardData(uint format);
+  [DllImport("user32.dll")] static extern bool IsClipboardFormatAvailable(uint format);
+  [DllImport("user32.dll")] static extern uint GetClipboardSequenceNumber();
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern uint RegisterClipboardFormat(string name);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GlobalAlloc(uint flags, UIntPtr size);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GlobalLock(IntPtr h);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GlobalUnlock(IntPtr h);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GlobalFree(IntPtr h);
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern uint DragQueryFile(IntPtr drop, uint i, StringBuilder name, uint size);
+  const uint CF_HDROP = 15, GMEM_MOVEABLE = 2;
+  // a hidden window to own the clipboard while setting it (Windows refuses SetClipboardData without an owner)
+  static System.Windows.Forms.NativeWindow owner;
+  static IntPtr Owner() {
+    if (owner == null) { owner = new System.Windows.Forms.NativeWindow(); var cp = new System.Windows.Forms.CreateParams(); cp.Parent = new IntPtr(-3); owner.CreateHandle(cp); }
+    return owner.Handle;
+  }
+  // another program may have it open for a moment
+  static void Open() {
+    for (int i = 0; i < 40; i++) { if (OpenClipboard(Owner())) return; Thread.Sleep(25); }
+    throw new Exception("the clipboard is busy (error " + Marshal.GetLastWin32Error() + ")");
+  }
+  static uint seq = 0; static string[] last = new string[0];
+  public static string[] Get() {
+    uint s = GetClipboardSequenceNumber();
+    if (s != 0 && s == seq) return last;                         // unchanged: don't even open it
+    if (!IsClipboardFormatAvailable(CF_HDROP)) { seq = s; last = new string[0]; return last; }
+    Open();
+    try {
+      var list = new List<string>();
+      IntPtr h = GetClipboardData(CF_HDROP);
+      if (h != IntPtr.Zero) {
+        uint n = DragQueryFile(h, 0xFFFFFFFF, null, 0);
+        for (uint i = 0; i < n; i++) { uint len = DragQueryFile(h, i, null, 0); var sb = new StringBuilder((int)len + 1); DragQueryFile(h, i, sb, len + 1); list.Add(sb.ToString()); }
+      }
+      seq = s; last = list.ToArray();
+      return last;
+    } finally { CloseClipboard(); }
+  }
+  static IntPtr Global(byte[] b) {
+    IntPtr h = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)b.Length);
+    if (h == IntPtr.Zero) throw new Exception("out of memory");
+    Marshal.Copy(b, 0, GlobalLock(h), b.Length); GlobalUnlock(h);
+    return h;
+  }
+  // like Explorer's Ctrl+C: the list of files (DROPFILES, wide names) and "copy" as the preferred action
+  public static void Set(string[] paths) {
+    var sb = new StringBuilder(); foreach (var p in paths) { sb.Append(p); sb.Append('\\0'); } sb.Append('\\0');
+    byte[] names = Encoding.Unicode.GetBytes(sb.ToString()), drop = new byte[20 + names.Length];
+    BitConverter.GetBytes(20).CopyTo(drop, 0);                  // pFiles: the names start after this header
+    BitConverter.GetBytes(1).CopyTo(drop, 16);                  // fWide
+    names.CopyTo(drop, 20);
+    IntPtr hDrop = Global(drop), hEffect = Global(BitConverter.GetBytes(1));     // DROPEFFECT_COPY
+    Open();
+    try {
+      EmptyClipboard();
+      if (SetClipboardData(CF_HDROP, hDrop) == IntPtr.Zero) { GlobalFree(hDrop); GlobalFree(hEffect); throw new Exception("Windows refused the file list (error " + Marshal.GetLastWin32Error() + ")"); }
+      if (SetClipboardData(RegisterClipboardFormat("Preferred DropEffect"), hEffect) == IntPtr.Zero) GlobalFree(hEffect);
+    } finally { CloseClipboard(); }
+  }
+}
+'@
 [Console]::Out.WriteLine('READY'); [Console]::Out.Flush()
 while ($true) {
   $l = [Console]::In.ReadLine()
   if ($null -eq $l) { break }
   try {
     if ($l -eq 'GET') {
-      $arr = @()
-      if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) { foreach ($f in [System.Windows.Forms.Clipboard]::GetFileDropList()) { $arr += [string]$f } }
-      [Console]::Out.WriteLine('OK ' + (ConvertTo-Json -Compress -InputObject @($arr)))
+      [Console]::Out.WriteLine('OK ' + (ConvertTo-Json -Compress -InputObject @([SCClip]::Get())))
     } elseif ($l.StartsWith('SET ')) {
       $paths = [string[]]@(foreach ($p in (ConvertFrom-Json $l.Substring(4))) { [string]$p })
-      $data = New-Object System.Windows.Forms.DataObject
-      $data.SetData([System.Windows.Forms.DataFormats]::FileDrop, $true, $paths)
-      # "copy" like Explorer's Ctrl+C (1 = DROPEFFECT_COPY)
-      $data.SetData('Preferred DropEffect', (New-Object System.IO.MemoryStream (,[byte[]](1, 0, 0, 0))))
-      # copy = $true: Windows keeps the data itself. Otherwise Explorer would have to ask this process for it
-      # on paste, and this process never answers while it waits for the next line: the paste silently fails.
-      [System.Windows.Forms.Clipboard]::SetDataObject($data, $true, 10, 100)
-      $check = [System.Windows.Forms.Clipboard]::GetFileDropList()
+      [SCClip]::Set($paths)
+      $check = [SCClip]::Get()
       if ($check.Count -ne $paths.Count) { throw "the clipboard did not keep the files ($($check.Count) of $($paths.Count))" }
       [Console]::Out.WriteLine('OK []')
     }

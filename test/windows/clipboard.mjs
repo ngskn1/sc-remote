@@ -13,7 +13,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 let fails = 0;
 const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) fails++; return c; };
 const until = async (fn, ms = 20000, step = 300) => { const end = Date.now() + ms; let v; while (Date.now() < end) { try { v = await fn(); if (v) return v; } catch {} await sleep(step); } return v; };
-const ps = cmd => { try { return execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', cmd], { encoding: 'utf8' }).trim(); } catch (e) { return 'ERROR ' + (e.stderr || e.message); } };
+const ps = cmd => { try { return execFileSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', cmd], { encoding: 'utf8' }).trim(); } catch (e) { return 'ERROR ' + String(e.stderr || e.message).split('\n')[0]; } };
+// the clipboard's file list as the signed-in user's programs see it (.NET/OLE, as Explorer reads it), with retries
+const userFileList = () => ps("for ($i = 0; $i -lt 10; $i++) { try { $l = [System.Windows.Forms.Clipboard]::GetFileDropList(); $l | ForEach-Object { $_ }; break } catch { Start-Sleep -Milliseconds 200 } }; if ($i -eq 10) { 'CLIPBOARD UNREADABLE' }".replace('for (', 'Add-Type -AssemblyName System.Windows.Forms; for ('));
 const read = f => { try { return fs.readFileSync(f, 'utf8'); } catch (e) { return `(${e.code})`; } };
 let agentLogMark = 0;
 const agentLogSince = () => { const all = read(AGENT_LOG); const s = all.slice(agentLogMark); agentLogMark = all.length; return s.trim(); };
@@ -64,6 +66,10 @@ await s.evaluate(() => send({ t: 'clip', kind: 'text', data: 'hello from the con
 await sleep(2500);
 ok(ps('Get-Clipboard') === 'hello from the controller', 'text sent to the PC is on its clipboard: "' + ps('Get-Clipboard') + '"');
 console.log('agent log:\n' + agentLogSince());
+section('text: the PC → this app');
+ps("Set-Clipboard -Value 'hello from the PC'");
+const gotText = await until(() => app.evaluate(async ({ clipboard }) => (await clipboard.readText()) === 'hello from the PC'), 8000);
+ok(gotText, 'text copied on the PC reaches this app (same clipboard here, so this only shows nothing broke)');
 
 /* ---------- files: this app → the PC (Ctrl+C here, Ctrl+V there) ---------- */
 section('files: this app → the PC');
@@ -73,7 +79,7 @@ await s.evaluate(p => sendClipFiles([p]), path.join(SRC, 'report.txt'));
 await until(async () => (await acts()).some(a => /Ready|failed|cancelled/i.test(a)), 30000);
 console.log('activity:', JSON.stringify(await acts()), 'toast:', await toastText());
 await sleep(2500);
-const onClip = ps('Get-Clipboard -Format FileDropList | ForEach-Object { $_.FullName }');
+const onClip = userFileList();
 console.log('the PC\'s clipboard (as the signed-in user):', onClip);
 const pasted = onClip.split(/\r?\n/).find(p => /report\.txt$/.test(p));
 ok(!!pasted, 'the file is on the PC\'s clipboard, ready for Ctrl+V');
@@ -94,11 +100,16 @@ const userHome = process.env.USERPROFILE;
 const HOSTFILE = path.join(userHome, 'Documents', 'from-the-pc.txt');
 fs.mkdirSync(path.dirname(HOSTFILE), { recursive: true }); fs.writeFileSync(HOSTFILE, 'made on the PC');
 await s.evaluate(() => document.querySelectorAll('#acts .act').forEach(a => a.remove()));
-console.log('copy on the PC:', ps(`Set-Clipboard -Path '${HOSTFILE}'; Get-Clipboard -Format FileDropList | ForEach-Object { $_.FullName }`));
-await until(async () => (await acts()).some(a => /from-the-pc/.test(a) && /Ready|failed/i.test(a)), 30000);
+// as Explorer does it: its "Copy" command, with the copying program still running (a live clipboard object)
+const { spawn } = await import('child_process');
+const explorerCopy = spawn('powershell.exe', ['-NoProfile', '-Sta', '-Command',
+  `$f = Get-Item -LiteralPath '${HOSTFILE}'; (New-Object -ComObject Shell.Application).NameSpace($f.DirectoryName).ParseName($f.Name).InvokeVerb('copy'); Start-Sleep 40`], { stdio: 'ignore' });
+await until(async () => (await acts()).some(a => /Getting|from-the-pc.*(Ready: press Ctrl\+V here|failed)/i.test(a)), 30000);
+await until(async () => (await acts()).some(a => /Ready: press Ctrl\+V here|failed/i.test(a) && /from-the-pc/.test(a)), 20000);
 const a2 = await acts();
 console.log('activity:', JSON.stringify(a2), 'toast:', await toastText());
-ok(a2.some(a => /Ready: press Ctrl\+V here/.test(a) && /from-the-pc/.test(a)), 'files copied on the PC arrive here, ready to paste');
+ok(a2.some(a => /Ready: press Ctrl\+V here/.test(a) && /from-the-pc/.test(a)), 'a file copied in Explorer on the PC arrives here, ready to paste');
+explorerCopy.kill();
 console.log('agent log:\n' + agentLogSince());
 await s.screenshot({ path: path.join(OUT, '3-files-from-pc.png') });
 
@@ -112,6 +123,7 @@ await s.screenshot({ path: path.join(OUT, '4-files-panel.png') });
 console.log('agent log:\n' + agentLogSince());
 
 section('logs');
+console.log('--- the agent\'s whole log:\n' + read(AGENT_LOG).split('\n').filter(l => /clip|file|stage|error|fail/i.test(l)).slice(-80).join('\n'));
 fs.copyFileSync(AGENT_LOG, path.join(OUT, 'agent-remote.log'));
 try { fs.copyFileSync(path.join(DATA, 'agent', 'service.log'), path.join(OUT, 'service.log')); } catch {}
 await app.close().catch(() => {});

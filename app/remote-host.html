@@ -250,8 +250,9 @@ R.onClip(async p => {
     // files copied here: describe them; the controller fetches them over the files connection
     try {
       const w = await R.fsWalk(p.paths);
+      R.log(`clipboard: offering ${w.roots.length} copied item(s) to the controller`);
       if (session && session.conn.open) session.conn.send({ t: 'clip-files', items: w.items, total: w.total, roots: w.roots });
-    } catch (e) { session.conn.send({ t: 'notice', text: 'Could not read the copied files: ' + e.message }); }
+    } catch (e) { R.log('clipboard: could not read the copied files: ' + e.message); session.conn.send({ t: 'notice', text: 'Could not read the copied files: ' + e.message }); }
     return;
   }
   session.conn.send({ t: 'clip', kind: p.kind, data: p.data });
