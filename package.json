@@ -16,7 +16,7 @@
     "dist:lab": "npm run assets && npm run windows-bin && electron-builder --config build/lab.config.js --win nsis --linux AppImage",
     "release:remote": "node scripts/release-remote.js"
   },
-  "dependencies": {
+  "optionalDependencies": {
     "loopback-capture": "3.0.2"
   },
   "devDependencies": {
