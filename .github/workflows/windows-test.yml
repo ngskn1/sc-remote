@@ -23,6 +23,13 @@ jobs:
           Start-Process $setup.FullName -ArgumentList '/S' -Wait
           sc.exe query SCRemote
           Get-ChildItem 'C:\Program Files\SC-Remote' | Select-Object -First 5
+      - name: Get Sysinternals PsExec (to look at the clipboard as the system account)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force C:\Tools | Out-Null
+          Invoke-WebRequest https://download.sysinternals.com/files/PSTools.zip -OutFile C:\Tools\pstools.zip
+          Expand-Archive C:\Tools\pstools.zip C:\Tools -Force
+          Get-Item C:\Tools\PsExec64.exe
       - name: Connect and copy files both ways
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'

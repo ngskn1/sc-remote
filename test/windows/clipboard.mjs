@@ -148,6 +148,25 @@ section('the clipboard helper, as the user');
   h.stdin.end(); h.kill();
 }
 
+// the same, as the system account in this session (as the agent runs), with Sysinternals PsExec
+section('the clipboard seen by the system account (PsExec)');
+{
+  const agentSession = ps("(Get-CimInstance Win32_Process -Filter \"Name='SC-Remote.exe'\" | Where-Object { $_.CommandLine -like '*--agent*' } | Select-Object -First 1).SessionId");
+  const out = path.join(OUT, 'system-clipboard.txt');
+  const { spawn } = await import('child_process');
+  const psexec = 'C:\\Tools\\PsExec64.exe';
+  if (fs.existsSync(psexec)) {
+    const p = spawn(psexec, ['-accepteula', '-nobanner', '-s', '-i', agentSession, 'powershell.exe', '-NoProfile', '-Sta', '-ExecutionPolicy', 'Bypass', '-File', path.resolve('test/windows/system-clipboard.ps1'), out, '14'], { stdio: 'ignore' });
+    await sleep(4000);
+    console.log('user copies A:', ps(`Set-Clipboard -Path '${HOSTFILE}'`));
+    await sleep(4000);
+    console.log('user copies B:', ps(`Set-Clipboard -Path '${HOSTFILE2}'`));
+    await new Promise(r => { p.on('exit', r); setTimeout(r, 20000); });
+    console.log(read(out));
+    console.log('the same seen by the user:', ps(`powershell -NoProfile -Sta -File '${path.resolve('test/windows/system-clipboard.ps1')}' '${out}.user' 2; Get-Content '${out}.user'`));
+  } else console.log('(no PsExec)');
+}
+
 section('Files panel');
 await s.evaluate(() => document.getElementById('filesBtn').click());
 await until(async () => (await s.inputValue('#path')) !== '', 20000);
