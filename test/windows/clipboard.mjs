@@ -130,6 +130,24 @@ console.log('agent log:\n' + agentLogSince());
 await s.screenshot({ path: path.join(OUT, '3-files-from-pc.png') });
 
 /* ---------- the Files panel ---------- */
+// the helper itself, run as the signed-in user (not the system account): does it see what was copied?
+section('the clipboard helper, as the user');
+{
+  const src = fs.readFileSync(path.resolve('remote/clipfiles.js'), 'utf8');
+  const script = eval('`' + src.match(/const WIN_SCRIPT = `([\s\S]*?)`;/)[1] + '`');
+  const { spawn } = await import('child_process');
+  const h = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Sta', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let out = '', err = ''; h.stdout.on('data', d => { out += d; }); h.stderr.on('data', d => { err += d; });
+  await until(() => /READY/.test(out), 30000);
+  const ask = async l => { const n = out.split('\n').length; h.stdin.write(l + '\n'); await until(() => out.split('\n').length > n, 10000, 50); return out.trim().split('\n').pop().trim(); };
+  ps(`Set-Clipboard -Path '${HOSTFILE}'`);
+  console.log('GET after Set-Clipboard:', await ask('GET'));
+  console.log('SET:', await ask('SET ' + JSON.stringify([HOSTFILE2])), '| user sees:', userFileList());
+  console.log('GET:', await ask('GET'));
+  if (err.trim()) console.log('helper errors:', err.trim().slice(0, 1500));
+  h.stdin.end(); h.kill();
+}
+
 section('Files panel');
 await s.evaluate(() => document.getElementById('filesBtn').click());
 await until(async () => (await s.inputValue('#path')) !== '', 20000);

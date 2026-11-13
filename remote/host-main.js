@@ -743,7 +743,7 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
       const sig = files.join('\n');
       if (sig !== lastClip.files) {
         lastClip.files = sig;
-        if (files.length) { lastClip.text = text; clipOffered = files; broadcastClip({ kind: 'files', paths: files }); return; }
+        if (files.length) { log(`clipboard: ${files.length} file(s) copied here`); lastClip.text = text; clipOffered = files; broadcastClip({ kind: 'files', paths: files }); return; }
       }
       if (files.length) return;                     // the text then is just the paths: don't send it as text
       if (png) {
