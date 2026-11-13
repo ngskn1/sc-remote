@@ -106,12 +106,23 @@ await s.evaluate(() => document.querySelectorAll('#acts .act').forEach(a => a.re
 const { spawn } = await import('child_process');
 const explorerCopy = spawn('powershell.exe', ['-NoProfile', '-Sta', '-Command',
   `$f = Get-Item -LiteralPath '${HOSTFILE}'; (New-Object -ComObject Shell.Application).NameSpace($f.DirectoryName).ParseName($f.Name).InvokeVerb('copy'); Start-Sleep 40`], { stdio: 'ignore' });
-await until(async () => (await acts()).some(a => /Getting|from-the-pc.*(Ready: press Ctrl\+V here|failed)/i.test(a)), 30000);
-await until(async () => (await acts()).some(a => /Ready: press Ctrl\+V here|failed/i.test(a) && /from-the-pc/.test(a)), 20000);
-const a2 = await acts();
+await sleep(3000);
+console.log('after Explorer\'s Copy, the clipboard (as the user):', userFileList());
+await until(async () => (await acts()).some(a => /from-the-pc/.test(a) && /Ready: press Ctrl\+V here|failed/i.test(a)), 20000);
+let a2 = await acts();
 console.log('activity:', JSON.stringify(a2), 'toast:', await toastText());
-ok(a2.some(a => /Ready: press Ctrl\+V here/.test(a) && /from-the-pc/.test(a)), 'a file copied in Explorer on the PC arrives here, ready to paste');
+console.log('agent log:\n' + agentLogSince());
+ok(a2.some(a => /Ready: press Ctrl\+V here/.test(a) && /from-the-pc/.test(a)), 'a file copied with Explorer\'s Copy on the PC arrives here, ready to paste');
 explorerCopy.kill();
+// and copied by a program that sets the list and exits (Set-Clipboard)
+const HOSTFILE2 = path.join(userHome, 'Documents', 'second-from-the-pc.txt'); fs.writeFileSync(HOSTFILE2, 'second');
+await s.evaluate(() => document.querySelectorAll('#acts .act').forEach(a => a.remove()));
+console.log('Set-Clipboard:', ps(`Set-Clipboard -Path '${HOSTFILE2}'`), '| clipboard now:', userFileList());
+await until(async () => (await acts()).some(a => /second-from-the-pc/.test(a) && /Ready: press Ctrl\+V here|failed/i.test(a)), 20000);
+a2 = await acts();
+console.log('activity:', JSON.stringify(a2), 'toast:', await toastText());
+console.log('agent log:\n' + agentLogSince());
+ok(a2.some(a => /Ready: press Ctrl\+V here/.test(a) && /second-from-the-pc/.test(a)), 'a file put on the clipboard with Set-Clipboard on the PC arrives here too');
 console.log('agent log:\n' + agentLogSince());
 await s.screenshot({ path: path.join(OUT, '3-files-from-pc.png') });
 
