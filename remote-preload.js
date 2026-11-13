@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const inv = (ch, ...a) => ipcRenderer.invoke(ch, ...a);
 
 contextBridge.exposeInMainWorld('remoteApp', {
-  platform: process.platform,
+  platform: (process.env.SCREENSHARE_TEST && process.env.SCREENSHARE_TEST_PLATFORM) || process.platform,
   // host settings
   state: () => inv('remote:state'),
   setEnabled: on => inv('remote:set-enabled', on),

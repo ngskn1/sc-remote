@@ -13,12 +13,13 @@ Please don't open a public issue for a security problem. Use **Security › Repo
 - **Lockout.** 5 wrong passwords lock sign-ins for 1 minute, then 2, 4… up to 30.
 - **Encrypted sessions.** Screen, input, clipboard and files travel over WebRTC (DTLS/SRTP) directly between the two PCs, or through a relay that can't decrypt them. The connection server only introduces them.
 - **History and log.** Every connection and refused attempt is listed in the app (Connection history) and in `agent\audit.log` (administrators).
-- **Updates.** Releases are built by GitHub Actions. Each carries a manifest signed with an RSA-3072 key kept as a repository secret; the app and the service only accept a manifest signed with it, for a newer version, with a download inside this repository's releases whose SHA-256 matches. The installer runs from folders only administrators can write.
+- **Updates.** Releases are built by GitHub Actions. Each carries a manifest signed with an RSA-3072 key kept as a repository secret; the app and the service only accept a manifest signed with it, for a newer version, with a download inside this repository's releases whose SHA-256 matches. The installer runs from folders only administrators can write. On Linux the app itself makes the same checks before it replaces its AppImage; on a Mac, people download new versions from the Releases page themselves.
 - **Windows service.** Runs as the system account so the sign-in screen, lock screen and UAC prompts can be controlled. Its settings need an administrator. Remote file access is limited to the signed-in user's folder. The app's windows can't navigate to other pages or open new ones.
 
 ## Known limits
 
 - **Not audited.** This is a small project, reviewed by its authors only.
+- **Mac app not notarized.** It carries only an ad-hoc signature (no Apple developer account), so macOS can't tell who made it and asks people to allow it once. Download it only from this repository's Releases page.
 - **The sign-in code is ours.** SRP-6a is a standard protocol, and the implementation is checked against the RFC 5054 test vector and an independent big-number implementation, but it has not been reviewed by a cryptographer. Its arithmetic is not constant-time.
 - **Older apps.** A PC still accepts apps from before this sign-in (ScreenShare 2.3/2.4, SC-Remote up to 1.3.1) with the earlier signed challenge, so they keep working during an upgrade. That costs the PC nothing, but those apps can still be fooled by an impostor PC into handing over something to test guesses against. Update them.
 - **Short passwords.** Guessing over the network is slow (5 tries, then a growing lockout), not impossible. Use 12 or more random characters.

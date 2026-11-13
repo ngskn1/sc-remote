@@ -18,6 +18,8 @@ const AGENT = (LAB && (process.argv.includes('--lab-agent') || process.argv.incl
 const PRODUCT = REMOTE_ED ? (PKG.edition === 'remote' ? PKG.productName : 'SC-Remote') : LAB ? 'ScreenShare Remote' : 'ScreenShare';
 if (REMOTE_ONLY) app.setName(PRODUCT);                    // before anything reads the profile folder
 // lab files shared by the agent and the app: ProgramData on Windows (set up by the installer)
+// (tests: SCREENSHARE_TEST_PLATFORM=darwin runs the Mac's connect-only behaviour on Linux)
+const PLATFORM = (process.env.SCREENSHARE_TEST && process.env.SCREENSHARE_TEST_PLATFORM) || process.platform;
 const LAB_ROOT = process.env.SCREENSHARE_LAB_ROOT || (process.platform === 'win32'
   ? path.join(process.env.ProgramData || 'C:\\ProgramData', REMOTE_ED ? PRODUCT : 'ScreenShare Remote')
   : path.join(os.homedir(), '.local', 'share', 'screenshare-remote'));
@@ -218,7 +220,8 @@ function updateConfig() {
   const manifestUrl = (test && process.env.SCREENSHARE_UPDATE_URL) || u.manifestUrl;
   const publicKey = test && process.env.SCREENSHARE_UPDATE_KEY ? fs.readFileSync(process.env.SCREENSHARE_UPDATE_KEY, 'utf8') : u.publicKey;
   if (!manifestUrl || !publicKey) return null;
-  return { manifestUrl, publicKey, page: u.repo ? `https://github.com/${u.repo}/releases/latest` : null,
+  const allowedPrefix = (test && process.env.SCREENSHARE_UPDATE_PREFIX) || (u.repo ? `https://github.com/${u.repo}/releases/download/` : null);
+  return { manifestUrl, publicKey, allowedPrefix, page: (test && process.env.SCREENSHARE_UPDATE_PAGE) || (u.repo ? `https://github.com/${u.repo}/releases/latest` : null),
            stateFile: path.join(LAB_ROOT, 'update-state.json'), justUpdated: process.argv.includes('--updated') };
 }
 
@@ -305,18 +308,74 @@ app.whenReady().then(() => {
   remote = require('./remote/host-main')({ ...settingsIO, appDir: __dirname, serverQuery, openMainWindow, log, lab, edition: EDITION,
     product: PRODUCT, feedbackUrl: process.env.SCREENSHARE_FEEDBACK_URL || PKG.feedbackUrl || null,
     defaultLang: REMOTE_ED ? 'pt' : 'en',
-    trayApp: REMOTE_ED && !AGENT,       // SC-Remote stays in the tray (ID, state, open, quit)
+    trayApp: REMOTE_ED && !AGENT,       // SC-Remote stays in the tray (ID, state, open, quit; not on a Mac)
+    minPassword: REMOTE_ED ? 8 : 6,
     update: REMOTE_ED && !AGENT ? updateConfig() : null });
   // hosts: the agent; the personal app; the remote edition's app where there's no service (Linux).
   // (the lab app and, on Windows, the remote edition's app only connect: the service's agent is this PC's host)
   const serviceHere = !!(lab.serviceExe && fs.existsSync(lab.serviceExe));
-  if (AGENT || (!LAB && !serviceHere)) remote.start();
+  if (AGENT || (!LAB && !serviceHere && PLATFORM !== 'darwin')) remote.start();   // (a Mac only connects)
   if (AGENT) return;                      // the agent shows nothing (except the banner while someone is connected)
+  macMenus();
   if (REMOTE_ED) remote.startAppTray();
   if (BACKGROUND && !REMOTE_ED && !remote.isEnabled()) { app.quit(); return; }    // autostart entry left over, remote access off
   if (!BACKGROUND) createWindow();
+  if (process.env.SCREENSHARE_SMOKE) smokeTest();
 });
+
+// Mac: the menu bar. In a remote session every shortcut goes to the other PC (Cmd+C, Cmd+W… arrive there as
+// Ctrl+C, Ctrl+W), so a session window gets a menu with nothing on the keyboard except Quit (Cmd+Q).
+function macMenus() {
+  if (process.platform !== 'darwin') return;
+  const { Menu } = require('electron');
+  const full = Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }]);
+  const inSession = Menu.buildFromTemplate([
+    { label: app.name, submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] },
+    { label: 'Window', submenu: [{ label: 'Minimize', click: (_i, w) => w && w.minimize() }, { label: 'Close', click: (_i, w) => w && w.close() }] },
+  ]);
+  Menu.setApplicationMenu(full);
+  app.on('browser-window-focus', (_e, w) => Menu.setApplicationMenu(w && w.scSession ? inSession : full));
+}
+
+// Release builds run this once on each system (SCREENSHARE_SMOKE=1): open the main window and a session window,
+// check that they work, print the result and quit.
+function smokeTest() {
+  const done = (ok, info) => {
+    const line = (ok ? 'SMOKE OK ' : 'SMOKE FAIL ') + JSON.stringify(info);
+    console.log(line);
+    if (process.env.SCREENSHARE_SMOKE_OUT) try { fs.writeFileSync(process.env.SCREENSHARE_SMOKE_OUT, line + '\n'); } catch {}
+    app.exit(ok ? 0 : 1);
+  };
+  setTimeout(() => done(false, { error: 'timed out' }), 90000);
+  const find = re => BrowserWindow.getAllWindows().find(w => !w.isDestroyed() && re.test(w.webContents.getURL()) && !w.webContents.isLoading());
+  const wait = async (re, ms) => { const end = Date.now() + ms; while (Date.now() < end) { const w = find(re); if (w) return w; await new Promise(r => setTimeout(r, 250)); } return null; };
+  (async () => {
+    try {
+      const m = await wait(/remote\.html/, 30000);
+      if (!m) return done(false, { error: 'the main window did not open' });
+      await new Promise(r => setTimeout(r, 2000));
+      const main = await m.webContents.executeJavaScript(`({ title: document.title, lang: document.documentElement.lang,
+        sections: [...document.querySelectorAll('section')].filter(s => !s.classList.contains('hidden')).map(s => s.id || s.querySelector('h2').textContent),
+        version: (document.getElementById('ver') || {}).textContent })`);
+      await m.webContents.executeJavaScript(`window.remoteApp.connect({ id: '123456789', password: 'smoke-test-1', name: 'smoke', remember: false })`);
+      const s = await wait(/remote-session\.html/, 30000);
+      if (!s) return done(false, { error: 'the session window did not open', main });
+      await new Promise(r => setTimeout(r, 1500));
+      const session = await s.webContents.executeJavaScript(`({ title: document.title, overlay: document.getElementById('omsg').textContent })`);
+      const srp = require('./remote/srp'), key = require('crypto').randomBytes(32);
+      const ctx = { nonce: 'ab'.repeat(32), salt: 'cd'.repeat(16), hostFp: 'h', clientFp: 'c' };
+      const hs = srp.hostStart(key.toString('hex')), ca = srp.clientAnswer(key, hs.B, ctx);
+      const signIn = srp.hostFinish(key.toString('hex'), hs.b, hs.B, ca.A, ca.m1, ctx) === ca.m2;
+      // a Mac shows "This Mac" (connect only); elsewhere this PC's own section (or the service's, on Windows)
+      const layout = process.platform === 'darwin' ? main.sections.includes('macSec') && !main.sections.includes('hostSec')
+                                                   : main.sections.includes('hostSec') || main.sections.includes('svcSec');
+      done(signIn && layout, { platform: process.platform, arch: process.arch, version: app.getVersion(), main, session, signIn, layout });
+    } catch (e) { done(false, { error: e.message }); }
+  })();
+}
 // With remote access on, the hidden host window keeps the app running (in the tray) after windows close.
 // The lab agent never quits by itself (its banner and prompt windows come and go).
 // (SC-Remote keeps running in the tray: it is quit from the tray's menu)
 app.on('window-all-closed', () => { if (!AGENT && !REMOTE_ED) app.quit(); });
+// Mac: clicking the Dock icon with no window open brings the main window back
+app.on('activate', () => { if (remote && !AGENT && BrowserWindow.getAllWindows().every(w => !w.isVisible())) openMainWindow(); });

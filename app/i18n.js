@@ -58,8 +58,14 @@
     'Set a password first': 'Defina uma senha primeiro',
     'Could not open the settings (they need administrator permission)': 'Não foi possível abrir as configurações (é preciso permissão de administrador)',
     'The remote access service is not installed': 'O serviço de acesso remoto não está instalado',
-    'With remote access on, ScreenShare keeps running in the tray after you close its windows. Anyone with the ID and password can control this PC.':
-      'Com o acesso remoto ligado, o ScreenShare continua rodando na bandeja depois que você fecha as janelas. Qualquer pessoa com o ID e a senha pode controlar este PC.',
+    'With remote access on, {0} keeps running in the tray after you close its windows. Anyone with the ID and password can control this PC.':
+      'Com o acesso remoto ligado, o {0} continua rodando na bandeja depois que você fecha as janelas. Qualquer pessoa com o ID e a senha pode controlar este PC.',
+    'at least {0} characters': 'pelo menos {0} caracteres',
+    'This Mac': 'Este Mac',
+    "The Mac version connects to other PCs. This Mac itself can't be controlled from them.": 'A versão para Mac conecta a outros PCs. Este Mac não pode ser controlado por eles.',
+    'The download page for version {0} is open in your browser. Install it over this one.': 'A página de download da versão {0} foi aberta no navegador. Instale-a por cima desta.',
+    'Download version {0}': 'Baixar a versão {0}',
+    'could not replace the program file': 'não foi possível substituir o arquivo do programa',
 
     // session window (remote-session.html)
     'Which screen to show': 'Qual tela mostrar',
@@ -218,6 +224,7 @@
   };
   // messages with numbers in them
   const PATTERNS = [
+    [/^Use at least (\d+) characters$/, 'Use pelo menos $1 caracteres'],
     [/^Too many wrong passwords\. Try again in (\d+) s\.$/, 'Muitas senhas erradas. Tente de novo em $1 s.'],
     [/^could not download the update \((.+)\)$/, 'não foi possível baixar a atualização ($1)'],
     [/^the installer did not finish \(code (-?\d+)\)$/, 'o instalador não terminou (código $1)'],

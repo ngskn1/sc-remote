@@ -1,6 +1,6 @@
 # SC-Remote: guide
 
-SC-Remote is the remote-desktop-only edition of ScreenShare, for Windows PCs. It works like AnyDesk:
+SC-Remote is the remote-desktop-only edition of ScreenShare, for the group's Windows PCs, with a Mac app that connects to them and a Linux app (section 7). It works like AnyDesk:
 
 - **Each PC has a 9-digit ID and its own password.** Anyone with both can control that PC.
 - **It's reachable from the moment the PC starts,** before anyone signs in. You can use the sign-in screen, the lock screen and administrator (UAC) prompts, and send a real Ctrl+Alt+Del.
@@ -8,7 +8,11 @@ SC-Remote is the remote-desktop-only edition of ScreenShare, for Windows PCs. It
 
 | File | What it is |
 |---|---|
-| `SC-Remote-Setup-1.4.0.exe` | Windows 10/11 installer: the app, plus the background service that makes the PC reachable. Newer versions are on [the Releases page](https://github.com/ngskn1/sc-remote/releases/latest). |
+| `SC-Remote-Setup-1.5.0.exe` | Windows 10/11 installer: the app, plus the background service that makes the PC reachable. |
+| `SC-Remote-1.5.0-mac.dmg` | Mac (Intel and Apple Silicon, macOS 12 or newer): connects to other PCs. The Mac itself can't be controlled. |
+| `SC-Remote-x86_64.AppImage` | Linux (64-bit): connects to other PCs, and can be controlled while someone is signed in. |
+
+All three are on [the Releases page](https://github.com/ngskn1/sc-remote/releases/latest), always in their newest version.
 | `ScreenShare-2.5.0-portable.exe` / `ScreenShare-2.5.0.AppImage` | The full ScreenShare (streaming + remote desktop). Use 2.5.0 or newer to connect to these PCs, e.g. from Linux. (2.3 and 2.4 still connect to an updated PC, with the older, weaker sign-in.) |
 
 ## 1. Install on a lab PC
@@ -33,7 +37,7 @@ The installer also does the following:
 
 **PCs you only connect from** (your own laptop, say) use the same installer. Untick **Allow remote access to this PC** and click Save. The service then stays idle and nobody can connect to that PC.
 
-**Silent install** (`SC-Remote-Setup-1.4.0.exe /S`) skips the settings window, and remote access stays off. To set it up later, open the app on that PC and click **Configurar o acesso remoto…** (Set up remote access…).
+**Silent install** (`SC-Remote-Setup-1.5.0.exe /S`) skips the settings window, and remote access stays off. To set it up later, open the app on that PC and click **Configurar o acesso remoto…** (Set up remote access…).
 
 ## 2. Connecting
 
@@ -73,7 +77,7 @@ SC-Remote looks for a new version every time it starts, and twice a day while it
 
 Nothing is installed without someone clicking the button, so PCs nobody uses keep their version until someone does. Any user signed in to the PC can start an update, but only an official, signed version newer than the installed one is ever installed.
 
-**Upgrading from 1.2.0:** 1.2.0 can't update itself. Run `SC-Remote-Setup-1.4.0.exe` on each PC once. It updates in place, keeping the ID, password and settings, and from then on updates come through the app.
+**Upgrading from 1.2.0:** 1.2.0 can't update itself. Run the newest `SC-Remote-Setup-….exe` on each PC once. It updates in place, keeping the ID, password and settings, and from then on updates come through the app.
 
 **Update the PCs you connect to first.** An app on 1.4.0 refuses to connect to a PC that is still on 1.3.1 or older, because that PC doesn't have the current sign-in. The other way round works: an older app can still connect to an updated PC.
 
@@ -129,3 +133,30 @@ On one PC:
 6. Change the password from the app on that PC and check that the old one stops working.
 
 If any step fails, send me the logs from section 5.
+
+## 7. Mac and Linux
+
+### On a Mac (connects only)
+
+1. Download `SC-Remote-1.5.0-mac.dmg`, open it and drag **SC-Remote** into **Applications**.
+2. Open SC-Remote. The first time, macOS refuses ("Apple could not verify…"), because the app isn't registered with Apple (that costs US$99 a year). Click **Done**, then go to **System Settings › Privacy & Security**, scroll down to the message about SC-Remote and click **Open Anyway**. Confirm with your Mac's password. From then on it opens normally.
+   - On macOS 14 or older you can instead Control-click SC-Remote in Applications and choose **Open**.
+   - If macOS says the app "is damaged", run this once in Terminal and open it again: `xattr -dr com.apple.quarantine /Applications/SC-Remote.app`
+3. Connect as on Windows (section 2). **Este Mac** (This Mac) at the top only says that the Mac can't be controlled; there's nothing to set up.
+
+**The keyboard.** **Cmd works as Ctrl** on the other PC: Cmd+C, Cmd+V, Cmd+Z, Cmd+W and so on do what Ctrl+C, Ctrl+V… do there. Option is Alt, and Ctrl stays Ctrl. The Windows key and Ctrl+Alt+Del are in the toolbar's **Keys ▾** menu. Cmd+Q still quits SC-Remote, and shortcuts macOS keeps for itself (Cmd+Tab, Cmd+Space) stay on the Mac.
+
+**Files.** Drag-and-drop and the Files panel work. Copying files with Cmd+C in Finder and pasting them on the other PC (and back) is written for the Mac but hasn't been tried on a real one yet; if it fails, use drag-and-drop.
+
+**Updates.** When there's a new version, **Este Mac** shows a notice with **Baixar a versão …** (Download version …), which opens the Releases page. Download the new `.dmg` and drag SC-Remote into Applications again, replacing the old one. macOS asks for **Open Anyway** again for each new version.
+
+### On Linux
+
+1. Download `SC-Remote-x86_64.AppImage` into a folder of your own (for example `~/Applications`), make it executable and run it: `chmod +x SC-Remote-x86_64.AppImage`, then `./SC-Remote-x86_64.AppImage` (or double-click it).
+   - If it doesn't start, install FUSE 2: `sudo apt install libfuse2` (on Linux Mint 22 / Ubuntu 24.04 the package is `libfuse2t64`).
+2. Connect as on Windows (section 2).
+3. **To let others control this computer:** under **Este computador**, set a password (at least 8 characters), turn on **Permitir o controle remoto deste PC** and note the ID. Tick **Iniciar com o computador** so SC-Remote starts in the background each time you sign in. Closing the window leaves it in the tray.
+
+Being controlled works while someone is signed in, in an X11 session (on Linux Mint: **Cinnamon**, not "Cinnamon on Wayland"). There's no service as on Windows: nobody can connect before sign-in, there's no Ctrl+Alt+Del, and while the computer is locked the other person sees the lock screen. It needs `python3`, which Mint and Ubuntu already have.
+
+**Updates.** **Reiniciar e atualizar** downloads the new AppImage, checks it the same way the Windows service does (the group's release key, and the file's fingerprint), replaces the file and restarts SC-Remote. That works when the AppImage is in a folder you can write to; otherwise the button opens the download page. The file keeps its name (`SC-Remote-x86_64.AppImage`) in every version, so **Iniciar com o computador** keeps working after updates.

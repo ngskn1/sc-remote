@@ -21,7 +21,7 @@ Settings are saved in a `ScreenShare-data` folder next to the executable. Keep t
 
 **2.3.0:** the remote password check is tied to the encrypted connection, so a compromised connection server can't relay it. SC-Remote PCs only accept apps from 2.3.0 on; older hosts still work with this version. Ctrl+Alt+Del is the real one on PCs that support it. Closing the control window ends the session on the other PC right away. The 2.2.0 notes still apply: a second computer taking over no longer confuses the host.
 
-There's also a separate edition, **SC-Remote**, for the group's lab PCs. It works like AnyDesk: an ID and password per PC, a Windows installer, and a background service so the PC is reachable from startup, with the sign-in screen, Ctrl+Alt+Del and UAC prompts. From 1.3.0 it updates itself from this repository's GitHub releases. See `windows/GUIDE.md`, and **Releasing SC-Remote** below. (The key-based lab edition, `lab/ADMIN-GUIDE.md`, is paused.)
+There's also a separate edition, **SC-Remote**, for the group's lab PCs. It works like AnyDesk: an ID and password per PC, a Windows installer, and a background service so the PC is reachable from startup, with the sign-in screen, Ctrl+Alt+Del and UAC prompts. From 1.3.0 it updates itself from this repository's GitHub releases. From 1.5.0 there's also a Mac app (connects to the PCs) and a Linux AppImage (connects, and can be controlled while someone is signed in), built and published with each release. See `windows/GUIDE.md`, and **Releasing SC-Remote** below. (The key-based lab edition, `lab/ADMIN-GUIDE.md`, is paused.)
 
 ## Audio options
 
@@ -150,6 +150,8 @@ npm install
 npm start                      # run in development
 npm run dist                   # dist/ScreenShare-*-portable.exe and dist/ScreenShare-*.AppImage
 npm run dist:remote            # SC-Remote: dist-remote/SC-Remote-Setup-*.exe
+npm run dist:remote-linux      # SC-Remote: dist-remote/SC-Remote-x86_64.AppImage
+npm run dist:remote-mac        # SC-Remote: dist-remote/SC-Remote-*-mac.dmg (on a Mac only)
 SCREENSHARE_EDITION=remote npm start   # run it in development (add --agent to run the background agent)
 npm run dist:lab               # the paused key-based lab edition
 ```
@@ -171,7 +173,7 @@ Files:
 
 ## Releasing SC-Remote
 
-Releases are built and published by GitHub Actions (`.github/workflows/release-sc-remote.yml`) on a Windows runner. Each release has two files: the installer, and `sc-remote-update.json`, a small manifest (version, download address, SHA-256) signed with the **release key**. Installed copies check `releases/latest/download/sc-remote-update.json` when they start. They only accept a manifest signed with that key, and the service checks the downloaded installer against the manifest's SHA-256 before running it.
+Releases are built and published by GitHub Actions (`.github/workflows/release-sc-remote.yml`) on Windows, Mac and Linux runners; each build is started once to check that it works before anything is published. Each release has the Windows installer, the Mac disk image, the Linux AppImage, and `sc-remote-update.json`, a small manifest (version, and the download address and SHA-256 of each file) signed with the **release key**. Installed copies check `releases/latest/download/sc-remote-update.json` when they start. They only accept a manifest signed with that key, and the service checks the downloaded installer against the manifest's SHA-256 before running it.
 
 To release a new version:
 
@@ -183,7 +185,7 @@ Optional release notes: set the repository variable `SC_REMOTE_RELEASE_NOTES` (S
 
 **The release key.** The private key is stored only in the repository secret `SC_REMOTE_UPDATE_KEY`. Its public half, `build/sc-remote/update-public.pem`, is built into every copy. Never commit the private key (`.gitignore` blocks `*.pem` except the public one). If the key is lost or leaked, make a new pair, replace `update-public.pem` and the secret, and install the next version by hand on every PC once, since copies only trust the old key. To make a new pair: `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out key.pem` and `openssl pkey -in key.pem -pubout -out build/sc-remote/update-public.pem`.
 
-To sign locally instead (e.g. to test): `npm run dist:remote`, then `SC_REMOTE_UPDATE_KEY_FILE=key.pem npm run release:remote` writes `dist-remote/sc-remote-update.json`, and adding `-- --publish` uploads both files with the `gh` CLI.
+To sign locally instead (e.g. to test): `npm run dist:remote`, then `SC_REMOTE_UPDATE_KEY_FILE=key.pem npm run release:remote` writes `dist-remote/sc-remote-update.json`, and adding `-- --publish` uploads the files with the `gh` CLI.
 
 See `SECURITY.md` for how the pieces are protected, the known limits, and how to report a problem.
 

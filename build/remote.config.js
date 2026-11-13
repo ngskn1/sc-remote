@@ -1,6 +1,8 @@
-// electron-builder settings for SC-Remote: remote desktop only, AnyDesk-style (ID + password per PC), Windows
-// installer with a background service so PCs are reachable from startup.
-//   npm run dist:remote
+// electron-builder settings for SC-Remote: remote desktop only, AnyDesk-style (ID + password per PC).
+//  Windows: installer with a background service so PCs are reachable from startup   npm run dist:remote
+//  Linux:   AppImage; connects, and can be controlled while someone is signed in      npm run dist:remote-linux
+//  Mac:     disk image (Intel + Apple Silicon); connects only. Built on a Mac         npm run dist:remote-mac
+//  (GitHub Actions builds all three for each release: .github/workflows/release-sc-remote.yml)
 // Icon: put a 256×256 PNG at build/sc-remote/icon.png (installer and shortcuts; the program's own icon is set
 // when building on Windows) and replace app/icon-tray.png (tray, 32×32 or larger).
 const fs = require('fs');
@@ -39,6 +41,19 @@ module.exports = {
     extraResources: [{ from: 'windows/bin', to: 'service', filter: ['*.exe'] }, { from: 'build/sc-remote/update.json', to: 'service/update.json' }],
     ...(fs.existsSync(icon) ? { icon } : {}),
   },
+  linux: {
+    target: [{ target: 'AppImage', arch: ['x64'] }], category: 'Network', executableName: 'sc-remote',
+    synopsis: 'Remote desktop with an ID and password', ...(fs.existsSync(icon) ? { icon } : {}),
+  },
+  // one name for every version: the app replaces this file when it updates itself (the release says the version)
+  appImage: { artifactName: 'SC-Remote-x86_64.AppImage' },
+  // No Apple developer account: an ad-hoc signature (needed to run on Apple Silicon). macOS asks people to allow
+  // the app once (System Settings › Privacy & Security › Open Anyway): see windows/GUIDE.md.
+  mac: {
+    target: [{ target: 'dmg', arch: ['universal'] }], identity: '-', hardenedRuntime: false,
+    category: 'public.app-category.utilities', ...(fs.existsSync(icon) ? { icon } : {}),
+  },
+  dmg: { artifactName: 'SC-Remote-${version}-mac.dmg' },
   nsis: {
     oneClick: true, perMachine: true, include: 'build/remote-installer.nsh',
     artifactName: 'SC-Remote-Setup-${version}.exe', shortcutName: 'SC-Remote', uninstallDisplayName: 'SC-Remote',

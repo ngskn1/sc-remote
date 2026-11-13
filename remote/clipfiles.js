@@ -2,6 +2,7 @@
 //  Linux: the formats Nemo/Nautilus/Caja ("x-special/gnome-copied-files") and KDE/others ("text/uri-list") use,
 //         through Electron's raw clipboard formats.
 //  Windows: Explorer's file-drop list, through a small long-lived PowerShell helper (Windows Forms clipboard).
+//  Mac: Finder's file list ("NSFilenamesPboardType", a property list of paths; one file URL as a fallback).
 const { clipboard, ClipboardItem } = require('electron');
 const { spawn } = require('child_process');
 const { pathToFileURL, fileURLToPath } = require('url');
@@ -37,6 +38,25 @@ async function writeLinux(paths) {
     [raw('text/uri-list')]: new Blob([uris.join('\r\n') + '\r\n']),                    // KDE, Thunar, most others
     'text/plain': new Blob([paths.join('\n')], { type: 'text/plain' }),
   })]);
+}
+
+/* ---------------- Mac ---------------- */
+const xmlUnescape = s => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+const xmlEscape = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function parsePlistPaths(xml) {
+  return [...String(xml).matchAll(/<string>([^<]*)<\/string>/g)].map(m => xmlUnescape(m[1])).filter(p => p.startsWith('/'));
+}
+function plistOf(paths) {
+  return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n' +
+         '<plist version="1.0">\n<array>\n' + paths.map(p => `\t<string>${xmlEscape(p)}</string>\n`).join('') + '</array>\n</plist>\n';
+}
+function readMac() {
+  try { const paths = parsePlistPaths(clipboard.read('NSFilenamesPboardType')); if (paths.length) return paths; } catch {}
+  try { const paths = parseUris(clipboard.read('public.file-url')); if (paths.length) return paths; } catch {}
+  return null;
+}
+function writeMac(paths) {
+  clipboard.writeBuffer('NSFilenamesPboardType', Buffer.from(plistOf(paths), 'utf8'));
 }
 
 /* ---------------- Windows ---------------- */
@@ -104,6 +124,7 @@ function winHelper() {
 /* ---------------- API ---------------- */
 async function readFiles() {
   if (process.platform === 'linux') return readLinux();
+  if (process.platform === 'darwin') return readMac();
   if (process.platform === 'win32') {
     const list = await winHelper().ask('GET');
     return list.length ? list : null;
@@ -112,9 +133,10 @@ async function readFiles() {
 }
 async function writeFiles(paths) {
   if (process.platform === 'linux') return writeLinux(paths);
+  if (process.platform === 'darwin') return writeMac(paths);
   if (process.platform === 'win32') return winHelper().ask('SET ' + JSON.stringify(paths));
   throw new Error('not supported on this OS');
 }
 function stop() { if (win) { try { win.proc.stdin.end(); win.proc.kill(); } catch {} win = null; } }
 
-module.exports = { readFiles, writeFiles, stop, parseUris };
+module.exports = { readFiles, writeFiles, stop, parseUris, parsePlistPaths, plistOf };

@@ -30,6 +30,16 @@ function signManifest(manifest, privateKeyPem) {
   return { manifest: text, sig: crypto.sign('sha256', Buffer.from(text, 'utf8'), privateKeyPem).toString('base64') };
 }
 
+// The download for this system. The manifest's own url/sha256/size are the Windows installer (what the Windows
+// service and SC-Remote 1.3–1.4 read); other systems are under "platforms" (from 1.5): { linux: {…}, darwin: {…} }.
+// Only addresses inside this repository's releases count.
+function platformAsset(m, platform, allowedPrefix) {
+  const a = platform === 'win32' ? m : m.platforms && m.platforms[platform];
+  if (!a || typeof a.url !== 'string' || !/^[0-9a-f]{64}$/.test(a.sha256 || '')) return null;
+  if (allowedPrefix && !a.url.startsWith(allowedPrefix)) return null;
+  return { url: a.url, sha256: a.sha256, size: Number(a.size) || 0, file: a.file || '' };
+}
+
 // The public key as the Windows service reads it (RSA modulus and exponent, base64)
 function publicKeyParts(publicKeyPem) {
   const jwk = crypto.createPublicKey(publicKeyPem).export({ format: 'jwk' });
@@ -37,4 +47,4 @@ function publicKeyParts(publicKeyPem) {
   return { n: b64(jwk.n), e: b64(jwk.e) };
 }
 
-module.exports = { MANIFEST_NAME, cmpVersion, verifyManifest, signManifest, publicKeyParts };
+module.exports = { MANIFEST_NAME, cmpVersion, verifyManifest, signManifest, publicKeyParts, platformAsset };

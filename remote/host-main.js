@@ -15,7 +15,11 @@ const clipFiles = require('./clipfiles');
 const PBKDF2_ROUNDS = 150000;          // (both ends of a sign-in derive the key here)
 
 module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDir, serverQuery, openMainWindow, log = console.log, lab = {},
-                                         product = 'ScreenShare', feedbackUrl = null, defaultLang = 'en', trayApp = false, update = null }) {
+                                         product = 'ScreenShare', feedbackUrl = null, defaultLang = 'en', trayApp = false, update = null,
+                                         minPassword = 6 }) {
+  // a Mac only connects to other PCs (being controlled would need screen-recording and accessibility
+  // permissions granted by hand, and a signed app); SC-Remote on Linux hosts while someone is signed in
+  const canHost = ((process.env.SCREENSHARE_TEST && process.env.SCREENSHARE_TEST_PLATFORM) || process.platform) !== 'darwin';
   const labHost = lab.host || null;       // this PC is a lab PC (lab edition agent)
   const labClient = lab.client || null;   // lab edition: my key, my labs, admin tools
   // The agent: started by the Windows service as the system account, before anyone signs in (lab edition, or the
@@ -61,14 +65,14 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
     const c = cfg();
     return {
       id: ensureId(), enabled: !!c.enabled, hasPassword: hasPassword(), autostart: getAutostart(),
-      keepAwake: c.keepAwake !== false, platform: process.platform, status,
+      keepAwake: c.keepAwake !== false, platform: process.platform, status, minPassword,
       wayland: process.platform === 'linux' && /wayland/i.test(process.env.XDG_SESSION_TYPE || ''),
     };
   }
 
   /* ---------------- password check (the key never leaves this process) ---------------- */
   function setPassword(pw) {
-    if (typeof pw !== 'string' || pw.length < 6) throw new Error('Use at least 6 characters');
+    if (typeof pw !== 'string' || pw.length < minPassword) throw new Error(`Use at least ${minPassword} characters`);
     const salt = crypto.randomBytes(16).toString('hex');
     const key = crypto.pbkdf2Sync(pw, Buffer.from(salt, 'hex'), PBKDF2_ROUNDS, 32, 'sha256').toString('hex');
     saveCfg({ salt, key });
@@ -424,7 +428,7 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   const agentLang = () => { const l = process.env.SCREENSHARE_LANG || hostOptions().lang; return l === 'pt' || l === 'en' ? l : defaultLang; };
   ipcMain.handle('app:info', () => ({
     product, version: app.getVersion(), lang: AGENT ? agentLang() : userLang(),
-    feedback: !!feedbackUrl, chooseLang: trayApp,
+    feedback: !!feedbackUrl, chooseLang: trayApp, canHost, platform: process.platform,
   }));
   ipcMain.handle('app:set-lang', (_e, l) => {
     if (l !== 'pt' && l !== 'en') return userLang();
@@ -484,6 +488,7 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   }
   function startAppTray() {
     if (appTray || !trayApp) return;
+    if (!canHost) { startUpdateChecks(); return; }      // Mac: no tray (nothing to show: it isn't controlled)
     const icon = nativeImage.createFromPath(page('icon-tray.png'));
     appTray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
     appTray.on('click', () => openManager());
@@ -499,8 +504,17 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   // only a manifest signed with the release key. "Restart and update" asks the service, which checks everything
   // again (signature, version, SHA-256 of the download) and runs the installer; the installer closes this app,
   // and the new version's service opens it again.
+  // Per system: Windows asks the service (above); SC-Remote's Linux AppImage downloads the new AppImage,
+  // checks it against the signed manifest and replaces itself; a Mac (and anything else) opens the download page.
   const U = require('./update');
   let upd = { state: 'idle', current: app.getVersion() };   // idle | available | installing | failed | updated
+  const appImage = () => {
+    const f = process.platform === 'linux' && process.env.APPIMAGE;
+    if (!f) return null;
+    try { fs.accessSync(path.dirname(f), fs.constants.W_OK); fs.accessSync(f, fs.constants.W_OK); return f; } catch { return null; }
+  };
+  // (the service exists only where the Windows installer put it; it installs the Windows installer)
+  const updateMethod = () => (serviceMode() ? 'service' : appImage() ? 'appimage' : 'download');
   let balloonFor = '', watchTimer = null;
   function setUpd(patch) {
     upd = { ...upd, ...patch };
@@ -523,9 +537,14 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const m = U.verifyManifest(await r.json(), update.publicKey);
       if (m.product && m.product !== product) throw new Error('the manifest is for ' + m.product);
-      if (U.cmpVersion(m.version, app.getVersion()) > 0) {
+      const asset = U.platformAsset(m, serviceMode() ? 'win32' : process.platform, update.allowedPrefix);
+      if (U.cmpVersion(m.version, app.getVersion()) > 0 && !asset) log(`update ${m.version}: nothing published for ${process.platform}`);
+      if (U.cmpVersion(m.version, app.getVersion()) > 0 && asset) {
         if (upd.state === 'failed' && upd.version === m.version) return true;           // (keeps "Try again")
-        if (upd.state !== 'available' || upd.version !== m.version) { log('update available: ' + m.version); setUpd({ state: 'available', version: m.version, notes: m.notes || '', error: '' }); }
+        if (upd.state !== 'available' || upd.version !== m.version) {
+          log('update available: ' + m.version);
+          setUpd({ state: 'available', version: m.version, notes: m.notes || '', error: '', asset, method: updateMethod(), opened: false });
+        }
       } else if (upd.state === 'available') setUpd({ state: 'idle', version: '' });
       return true;
     } catch (e) {
@@ -550,10 +569,44 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
     };
     setTimeout(run, process.env.SCREENSHARE_TEST ? 300 : 3000).unref();
   }
+  // Linux AppImage: download next to it, check, swap the file (the running copy keeps its old one open) and restart
+  async function installAppImage() {
+    const target = appImage(), a = upd.asset;
+    const tmp = path.join(path.dirname(target), '.' + path.basename(target) + '.update');
+    log('update to ' + upd.version + ': downloading ' + a.url);
+    setUpd({ state: 'installing', step: 'downloading', error: '' });
+    let error = 'could not download the update';
+    try {
+      const { net } = require('electron');
+      const r = await net.fetch(a.url, { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const hash = crypto.createHash('sha256');
+      const out = fs.createWriteStream(tmp, { mode: 0o700 });
+      const finished = new Promise((res, rej) => { out.on('finish', res); out.on('error', rej); });
+      for await (const chunk of r.body) { hash.update(chunk); if (!out.write(chunk)) await new Promise(res => out.once('drain', res)); }
+      out.end(); await finished;
+      if (hash.digest('hex') !== a.sha256 || (a.size && fs.statSync(tmp).size !== a.size)) { error = 'the downloaded update is damaged'; throw new Error(error); }
+      error = 'could not replace the program file';
+      setUpd({ step: 'installing' });
+      fs.chmodSync(tmp, 0o755);
+      fs.renameSync(tmp, target);
+      try { fs.mkdirSync(path.dirname(update.stateFile), { recursive: true }); fs.writeFileSync(update.stateFile, JSON.stringify({ state: 'done', version: upd.version, at: new Date().toISOString() })); } catch {}
+      log('updated the AppImage to ' + upd.version + ': restarting');
+      app.relaunch({ execPath: target, args: ['--updated'] });
+      setTimeout(() => app.exit(0), 300);
+    } catch (e) {
+      log('update failed: ' + e.message);
+      try { fs.unlinkSync(tmp); } catch {}
+      setUpd({ state: 'failed', error });
+    }
+  }
   function installUpdate() {
     if (!update || !['available', 'failed'].includes(upd.state) || !upd.version) return upd;
-    if (!serviceMode()) {                             // no service here (not installed with the Windows installer)
+    const method = updateMethod();
+    if (method === 'appimage' && upd.asset) { installAppImage(); return { ...upd, state: 'installing', step: 'downloading' }; }
+    if (method === 'download') {                      // Mac, or no service / no writable AppImage: the download page
       if (update.page) shell.openExternal(update.page);
+      setUpd({ method, opened: true });
       return upd;
     }
     const since = Date.now();
@@ -861,8 +914,11 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
       webPreferences: { preload, contextIsolation: true, sandbox: true, backgroundThrottling: false },
     });
     w.setMenu(null);                    // no menu shortcuts (Ctrl+W, Ctrl+R…): every key goes to the remote PC
-    sessionCreds.set(w.webContents.id, creds);
-    w.webContents.on('destroyed', () => sessionCreds.delete(w.webContents.id));
+    w.scSession = true;                 // (Mac: main.js swaps the menu bar for one without shortcuts)
+    w.on('page-title-updated', e => e.preventDefault());   // keep "PC name – SC-Remote" (not the page's own title)
+    const wcId = w.webContents.id;      // (read now: the window is gone by the time "destroyed" fires on exit)
+    sessionCreds.set(wcId, creds);
+    w.webContents.on('destroyed', () => sessionCreds.delete(wcId));
     w.loadFile(page('remote-session.html'), { query: q() });
     w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     // closing: let the page say goodbye to the other PC first (otherwise it notices only after a few seconds)
@@ -873,8 +929,14 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
       w.webContents.send('session:closing');                       // the page closes itself after that
       setTimeout(() => { if (!w.isDestroyed()) w.close(); }, 1500); // (or we do, if it doesn't)
     });
+    // Quit (tray menu, Cmd+Q) while connected: holding the window open above cancels that quit, so once the
+    // window has said goodbye and closed, quit again
+    w.on('closed', () => { if (quitting) setImmediate(() => app.quit()); });
     return true;
   }
+
+  let quitting = false;
+  app.on('before-quit', () => { quitting = true; });
 
   /* ---------------- saved computers (client side) ---------------- */
   const enc = s => safeStorage.isEncryptionAvailable() ? 'enc:' + safeStorage.encryptString(s).toString('base64') : 'b64:' + Buffer.from(s).toString('base64');
@@ -1266,7 +1328,7 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   h('remote:drop-files', async (e, paths, x, y) => isEngine(e.sender) ? dropFiles(paths, x, y) : { ok: false });
 
   return {
-    startAppTray,
+    startAppTray, startUpdateChecks,
     start() {
       if (hostEnabled()) { startEngine(); updateTray(); }
       if (AGENT && !labHost) {

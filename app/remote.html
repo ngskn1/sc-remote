@@ -78,7 +78,12 @@
     </div>
     <div id="wayland" class="warnbox hidden">This is a Wayland session. Remote control needs the X11 session: log out, pick <b>Cinnamon</b> (not "Cinnamon on Wayland") on the login screen, and log back in.</div>
     <div class="msg" id="hmsg"></div>
-    <div class="muted">With remote access on, ScreenShare keeps running in the tray after you close its windows. Anyone with the ID <b>and</b> password can control this PC.</div>
+    <div class="muted" id="hostNote"></div>
+  </section>
+
+  <section id="macSec" class="hidden">
+    <h2>This Mac</h2>
+    <div class="muted">The Mac version connects to other PCs. This Mac itself can't be controlled from them.</div>
   </section>
 
   <section id="svcSec" class="hidden">
@@ -136,6 +141,7 @@ function render(s) {
   $('awake').checked = s.keepAwake;
   $('pwstate').textContent = s.hasPassword ? t('A password is set. Setting a new one disconnects anyone connected.') : t('No password yet: set one to turn remote access on.');
   $('wayland').classList.toggle('hidden', !s.wayland);
+  $('newpw').placeholder = t('at least {0} characters', s.minPassword || 6);
   const st = s.enabled ? s.status : { state: 'off' };
   const map = { off: [t('Off'), ''], starting: [t('Connecting to the internet…'), 'warn'], online: [t('Online, waiting for connections'), 'ok'],
                 connected: [t('Being controlled from {0}', st.peer || t('another PC')), 'live'], error: [t('Problem: {0}', st.message || t('offline')), 'bad'] };
@@ -242,7 +248,10 @@ R.onHistory(renderHistory);
 function renderUpdate(u) {
   if (!u) return;
   let text = '', cls = '', label = '';
-  if (u.state === 'available') { text = t('A new version of {0} is available: {1}.', product, u.version); label = t('Restart and update'); }
+  if (u.state === 'available' && u.method === 'download') {           // Mac (or no way to install it from here)
+    text = u.opened ? t('The download page for version {0} is open in your browser. Install it over this one.', u.version) : t('A new version of {0} is available: {1}.', product, u.version);
+    label = t('Download version {0}', u.version);
+  } else if (u.state === 'available') { text = t('A new version of {0} is available: {1}.', product, u.version); label = t('Restart and update'); }
   else if (u.state === 'installing') { cls = 'busy'; text = u.step === 'installing' ? t('Installing version {0}… {1} closes and reopens by itself.', u.version, product) : t('Downloading version {0}…', u.version); }
   else if (u.state === 'failed') { cls = 'bad'; text = t('The update failed: {0}', t(u.error || 'unknown error')); label = u.version ? t('Try again') : ''; }
   else if (u.state === 'updated') { cls = 'ok'; text = t('{0} was updated to version {1}.', product, u.current); }
@@ -268,8 +277,12 @@ let product = 'ScreenShare';
     $('ver').textContent = `${info.product} ${info.version}`; $('ver').classList.remove('hidden');
   }
   if (info.feedback) { $('feedback').classList.remove('hidden'); $('feedback').onclick = e => { e.preventDefault(); R.openFeedback(); }; }
+  $('hostNote').textContent = t('With remote access on, {0} keeps running in the tray after you close its windows. Anyone with the ID and password can control this PC.', product);
   svc = await R.serviceInfo();
-  if (svc) {
+  if (!info.canHost) {                     // Mac: connects only
+    $('hostSec').classList.add('hidden'); $('macSec').classList.remove('hidden');
+    $('macSec').append($('upd'));
+  } else if (svc) {
     $('hostSec').classList.add('hidden'); $('svcSec').classList.remove('hidden');
     renderService(svc);
     setInterval(refreshService, 5000);

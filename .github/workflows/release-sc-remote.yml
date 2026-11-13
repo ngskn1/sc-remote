@@ -1,7 +1,7 @@
-# Builds the SC-Remote installer on Windows and publishes it as a GitHub release, with the signed update manifest
-# that installed copies check at startup.
+# Builds SC-Remote for Windows (installer), Mac (disk image) and Linux (AppImage), checks that each one starts,
+# and publishes them as one GitHub release, with the signed update manifest that installed copies check.
 #   Release a new version: raise "version" in build/sc-remote/release.json, commit, then either push a tag "v<version>"
-#   (git tag v1.3.1 && git push origin v1.3.1) or run this workflow from the Actions tab.
+#   (git tag v1.5.1 && git push origin v1.5.1) or run this workflow from the Actions tab.
 name: SC-Remote release
 
 on:
@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -28,9 +28,89 @@ jobs:
       # (no install scripts: the build needs none, and the streaming edition's native audio module isn't used here)
       - run: npm ci --ignore-scripts
       - run: npm run dist:remote
+      - name: Check that it starts
+        shell: bash
+        env:
+          SCREENSHARE_SMOKE: '1'
+          SCREENSHARE_SMOKE_OUT: smoke.txt
+        run: |
+          ./dist-remote/win-unpacked/SC-Remote.exe || true
+          cat smoke.txt
+          grep -q '^SMOKE OK' smoke.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist-remote/SC-Remote-Setup-*.exe
+          if-no-files-found: error
+
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run dist:remote-mac
+      - name: Check that it starts
+        env:
+          SCREENSHARE_SMOKE: '1'
+          SCREENSHARE_SMOKE_OUT: smoke.txt
+        run: |
+          ./dist-remote/mac-universal/SC-Remote.app/Contents/MacOS/SC-Remote || true
+          cat smoke.txt
+          grep -q '^SMOKE OK' smoke.txt
+          codesign -dv dist-remote/mac-universal/SC-Remote.app 2>&1 | grep -E 'Signature|Format'
+          lipo -archs dist-remote/mac-universal/SC-Remote.app/Contents/MacOS/SC-Remote
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: dist-remote/SC-Remote-*-mac.dmg
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run dist:remote-linux
+      - name: Check that it starts
+        env:
+          SCREENSHARE_SMOKE: '1'
+          SCREENSHARE_SMOKE_OUT: smoke.txt
+        run: |
+          xvfb-run -a ./dist-remote/linux-unpacked/sc-remote --no-sandbox || true
+          cat smoke.txt
+          grep -q '^SMOKE OK' smoke.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist-remote/SC-Remote-x86_64.AppImage
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, mac, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-remote
+          merge-multiple: true
       - name: Sign the update manifest and publish the release
         env:
           SC_REMOTE_UPDATE_KEY: ${{ secrets.SC_REMOTE_UPDATE_KEY }}
+          RELEASE_REQUIRE: win32,darwin,linux
           RELEASE_NOTES: ${{ vars.SC_REMOTE_RELEASE_NOTES }}
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/release-remote.js --publish
+        run: |
+          ls -la dist-remote
+          node scripts/release-remote.js --publish

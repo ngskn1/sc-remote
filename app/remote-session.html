@@ -435,15 +435,30 @@ video.addEventListener('wheel', e => {
 
 /* ---------------- keyboard: physical keys, the remote PC applies its own layout ---------------- */
 const ours = t => t && t.closest && t.closest('#bar, #files, #overlay');
+// Mac: Cmd works as Ctrl on the other PC (Cmd+C → Ctrl+C, Cmd+W → Ctrl+W…); Ctrl stays Ctrl, Option is Alt, and
+// the Windows key is in the Keys menu. macOS doesn't report a key's release while Cmd is held, so with Cmd down
+// each key is sent as a press and a release at once. Caps Lock comes as "down" when it turns on and "up" when it
+// turns off: each of those is a full press on the other PC.
+const MAC = R.platform === 'darwin';
+const mapCode = c => (MAC && c === 'MetaLeft' ? 'ControlLeft' : MAC && c === 'MetaRight' ? 'ControlRight' : c);
+const tapped = new Set();
+const isModifier = c => /^(Meta|Control|Shift|Alt|OS)/.test(c);
 addEventListener('keydown', e => {
   if (ours(e.target) || !token) return;
   e.preventDefault(); e.stopPropagation();
-  send({ t: 'k', c: e.code, d: 1, r: e.repeat });
+  if (MAC && (e.code === 'CapsLock' || (e.metaKey && !isModifier(e.code)))) {
+    send({ t: 'k', c: e.code, d: 1, r: e.repeat }); send({ t: 'k', c: e.code, d: 0 });
+    if (e.code !== 'CapsLock') tapped.add(e.code);
+    return;
+  }
+  send({ t: 'k', c: mapCode(e.code), d: 1, r: e.repeat });
 }, true);
 addEventListener('keyup', e => {
   if (ours(e.target) || !token) return;
   e.preventDefault(); e.stopPropagation();
-  send({ t: 'k', c: e.code, d: 0 });
+  if (MAC && e.code === 'CapsLock') { send({ t: 'k', c: e.code, d: 1 }); send({ t: 'k', c: e.code, d: 0 }); return; }
+  if (tapped.delete(e.code)) return;                   // (already released)
+  send({ t: 'k', c: mapCode(e.code), d: 0 });
 }, true);
 // never leave keys or buttons held on the remote PC when this window loses focus
 addEventListener('blur', () => send({ t: 'release' }));
