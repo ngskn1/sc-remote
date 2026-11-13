@@ -12,7 +12,7 @@
     "dist": "npm run assets && electron-builder --win portable --linux AppImage",
     "dist:remote": "npm run assets && npm run windows-bin && electron-builder --config build/remote.config.js --win nsis",
     "dist:remote-linux": "npm run assets && electron-builder --config build/remote.config.js --linux AppImage",
-    "dist:remote-mac": "npm run assets && electron-builder --config build/remote.config.js --mac dmg",
+    "dist:remote-mac": "npm run assets && electron-builder --config build/remote.config.js --mac",
     "dist:lab": "npm run assets && npm run windows-bin && electron-builder --config build/lab.config.js --win nsis --linux AppImage",
     "release:remote": "node scripts/release-remote.js"
   },

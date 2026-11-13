@@ -58,11 +58,15 @@ jobs:
           SCREENSHARE_SMOKE: '1'
           SCREENSHARE_SMOKE_OUT: smoke.txt
         run: |
-          ./dist-remote/mac-universal/SC-Remote.app/Contents/MacOS/SC-Remote || true
+          APP=dist-remote/mac-universal/SC-Remote.app
+          ls dist-remote
+          # one app for both kinds of Mac: Intel (x86_64) and Apple Silicon (arm64)
+          lipo -archs "$APP/Contents/MacOS/SC-Remote" | tee archs.txt
+          grep -q x86_64 archs.txt && grep -q arm64 archs.txt
+          codesign -dv "$APP" 2>&1 | grep -E 'Signature|Format'
+          "$APP/Contents/MacOS/SC-Remote" || true
           cat smoke.txt
           grep -q '^SMOKE OK' smoke.txt
-          codesign -dv dist-remote/mac-universal/SC-Remote.app 2>&1 | grep -E 'Signature|Format'
-          lipo -archs dist-remote/mac-universal/SC-Remote.app/Contents/MacOS/SC-Remote
       - uses: actions/upload-artifact@v4
         with:
           name: mac
