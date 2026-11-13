@@ -45,7 +45,9 @@ section('connect');
 const CLIENT = path.join(OUT, 'client');
 fs.mkdirSync(path.join(CLIENT, 'Roaming'), { recursive: true }); fs.mkdirSync(path.join(CLIENT, 'Local'), { recursive: true });
 const app = await electron.launch({ executablePath: APP, args: [], timeout: 60000,
-  env: { ...process.env, APPDATA: path.join(CLIENT, 'Roaming'), LOCALAPPDATA: path.join(CLIENT, 'Local'), SCREENSHARE_LANG: 'en' } });
+  env: { ...process.env, APPDATA: path.join(CLIENT, 'Roaming'), LOCALAPPDATA: path.join(CLIENT, 'Local'), SCREENSHARE_LANG: 'en',
+         // one machine, one clipboard: this copy (the controller) doesn't touch it, so only the PC's side does
+         SCREENSHARE_TEST: '1', SCREENSHARE_TEST_CONTROLLER_NO_CLIPBOARD: '1' } });
 const M = await app.firstWindow(); await M.waitForLoadState();
 const [s] = await Promise.all([app.waitForEvent('window'), M.evaluate(o => window.remoteApp.connect(o), { id, password, name: 'Windows PC', remember: false })]);
 await s.waitForLoadState();
@@ -69,7 +71,7 @@ console.log('agent log:\n' + agentLogSince());
 section('text: the PC → this app');
 ps("Set-Clipboard -Value 'hello from the PC'");
 const gotText = await until(() => app.evaluate(async ({ clipboard }) => (await clipboard.readText()) === 'hello from the PC'), 8000);
-ok(gotText, 'text copied on the PC reaches this app (same clipboard here, so this only shows nothing broke)');
+ok(gotText, 'text copied on the PC: still on the clipboard here (one machine, so this only shows nothing broke)');
 
 /* ---------- files: this app → the PC (Ctrl+C here, Ctrl+V there) ---------- */
 section('files: this app → the PC');
@@ -85,7 +87,7 @@ const pasted = onClip.split(/\r?\n/).find(p => /report\.txt$/.test(p));
 ok(!!pasted, 'the file is on the PC\'s clipboard, ready for Ctrl+V');
 if (pasted) {
   console.log('readable by the user:', ps(`Get-Content -LiteralPath '${pasted}'`));
-  console.log('its permissions:', ps(`(Get-Acl -LiteralPath '${pasted}').Access | ForEach-Object { \"$($_.IdentityReference) $($_.FileSystemRights) $($_.AccessControlType)\" }`));
+  try { console.log('its permissions:', execFileSync('icacls', [pasted], { encoding: 'utf8' }).trim()); } catch {}
   // what Explorer's paste does: copy the clipboard's files into a folder
   const DEST = path.join(OUT, 'pasted-on-pc'); fs.mkdirSync(DEST, { recursive: true });
   console.log('paste (shell copy):', ps(`$sh = New-Object -ComObject Shell.Application; $sh.NameSpace('${DEST}').CopyHere('${pasted}', 16); Start-Sleep 2; Get-ChildItem '${DEST}' | ForEach-Object Name`));

@@ -1135,6 +1135,35 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
     writeAppSettings({ remoteFileDirs: next });
     return true;
   });
+  // Files panel preferences: favourite folders on each PC (per PC) and on this computer, where downloads go,
+  // and the folder last open on this computer. null reads them; an object changes those keys.
+  h('session:file-prefs', (e, patch) => {
+    const c = sessionCreds.get(e.sender.id);
+    if (!c) return null;
+    const st = readAppSettings(), key = filesKey(c);
+    const paths = v => (Array.isArray(v) ? v.map(String).filter(p => p && p.length <= 1000).slice(-20) : []);
+    if (patch && typeof patch === 'object') {
+      const next = {};
+      if ('remoteFavs' in patch) {
+        const all = { ...(st.remoteFileFavs || {}) }; delete all[key];
+        const list = paths(patch.remoteFavs); if (list.length) all[key] = list;
+        const keys = Object.keys(all); for (const k of keys.slice(0, Math.max(0, keys.length - 100))) delete all[k];
+        next.remoteFileFavs = all;
+      }
+      if ('localFavs' in patch) next.localFileFavs = paths(patch.localFavs);
+      if ('downloadDir' in patch) next.fileDownloadDir = patch.downloadDir ? String(patch.downloadDir).slice(0, 1000) : null;
+      if ('localDir' in patch) next.localFilesDir = patch.localDir ? String(patch.localDir).slice(0, 1000) : null;
+      writeAppSettings(next);
+      return true;
+    }
+    const isDir = p => { try { return !!p && fs.statSync(p).isDirectory(); } catch { return false; } };
+    return { remoteFavs: (st.remoteFileFavs || {})[key] || [], localFavs: st.localFileFavs || [],
+             downloadDir: isDir(st.fileDownloadDir) ? st.fileDownloadDir : null, localDir: isDir(st.localFilesDir) ? st.localFilesDir : null };
+  });
+  h('fs:places', () => {
+    const p = n => { try { return app.getPath(n); } catch { return null; } };
+    return { home: os.homedir(), desktop: p('desktop'), documents: p('documents'), downloads: p('downloads') };
+  });
   h('remote:saved', () => publicSaved());
   h('remote:forget', (_e, id) => { writeAppSettings({ remoteSaved: saved().filter(s => s.id !== id) }); return publicSaved(); });
   h('session:creds', e => {
@@ -1276,8 +1305,12 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   h('session:set-title', (e, title) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.setTitle(String(title)); });
 
   // clipboard + files (our own local pages only: engine, manager, sessions)
-  h('clip:watch', (e, on) => watchClipboard(e.sender, !!on));
-  h('clip:set', async (_e, payload) => {
+  // (Windows test: the controller and the PC are one machine there, with one clipboard; the controller's side
+  //  leaves it alone, or the two would pass the same files back and forth)
+  const testSharedClip = !!(process.env.SCREENSHARE_TEST && process.env.SCREENSHARE_TEST_CONTROLLER_NO_CLIPBOARD);
+  h('clip:watch', (e, on) => (testSharedClip && !isEngine(e.sender) ? null : watchClipboard(e.sender, !!on)));
+  h('clip:set', async (e, payload) => {
+    if (testSharedClip && !isEngine(e.sender)) return;
     try { await setClipboard(payload || {}); if (payload && payload.kind === 'files') log(`clipboard: ${payload.paths.length} item(s) ready to paste`); }
     catch (e) { log(`clipboard: could not set ${payload && payload.kind}: ${e.message}`); throw e; }
   });
