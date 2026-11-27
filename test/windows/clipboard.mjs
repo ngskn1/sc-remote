@@ -47,7 +47,9 @@ fs.mkdirSync(path.join(CLIENT, 'Roaming'), { recursive: true }); fs.mkdirSync(pa
 const app = await electron.launch({ executablePath: APP, args: [], timeout: 60000,
   env: { ...process.env, APPDATA: path.join(CLIENT, 'Roaming'), LOCALAPPDATA: path.join(CLIENT, 'Local'), SCREENSHARE_LANG: 'en',
          // one machine, one clipboard: this copy (the controller) doesn't touch it, so only the PC's side does
-         SCREENSHARE_TEST: '1', SCREENSHARE_TEST_CONTROLLER_NO_CLIPBOARD: '1' } });
+         SCREENSHARE_TEST: '1', SCREENSHARE_TEST_CONTROLLER_NO_CLIPBOARD: '1',
+         // copies of 100 KB or more ask first here (2 GB normally)
+         SCREENSHARE_TEST_CLIP_LIMIT: '100000' } });
 const M = await app.firstWindow(); await M.waitForLoadState();
 const [s] = await Promise.all([app.waitForEvent('window'), M.evaluate(o => window.remoteApp.connect(o), { id, password, name: 'Windows PC', remember: false })]);
 await s.waitForLoadState();
@@ -190,6 +192,63 @@ await until(async () => (await s.inputValue('#path')) !== '', 20000);
 console.log('Files panel opens at:', await s.inputValue('#path'), '| entries:', (await s.textContent('#list')).slice(0, 200));
 ok((await s.inputValue('#path')).toLowerCase() === userHome.toLowerCase(), 'the Files panel opens in the signed-in user\'s folder');
 await s.screenshot({ path: path.join(OUT, '4-files-panel.png') });
+console.log('agent log:\n' + agentLogSince());
+
+// The members' file operations run as the signed-in user: other drives work, and Windows' permissions apply
+section('Files panel: other drives, as the signed-in user');
+const OUTD = 'D:\\sc-test-' + id;
+fs.mkdirSync(path.join(OUTD, 'deep'), { recursive: true });
+fs.writeFileSync(path.join(OUTD, 'outside.txt'), 'from drive D\n');
+fs.writeFileSync(path.join(OUTD, 'deep', 'big.bin'), crypto.randomBytes(5000));
+// a folder only the system account may open (the user, even an administrator, may not)
+fs.mkdirSync(path.join(OUTD, 'system-only'));
+fs.writeFileSync(path.join(OUTD, 'system-only', 'secret.txt'), 'secret');
+console.log(ps(`icacls '${OUTD}\\system-only' /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F'`));
+console.log('can this user list it?', ps(`try { Get-ChildItem '${OUTD}\\system-only' -ErrorAction Stop | Out-Null; 'yes' } catch { 'no: ' + $_.Exception.Message }`));
+const listOf = p => s.evaluate(p => rpc({ op: 'list', path: p }).then(r => ({ path: r.path, parent: r.parent, roots: r.roots, names: r.entries.map(e => e.name) }), e => ({ error: String(e && e.message || e) })), p);
+const dRoot = await listOf('D:\\');
+console.log('D:\\ →', JSON.stringify(dRoot).slice(0, 400));
+ok(!dRoot.error && dRoot.names.includes(path.basename(OUTD)), 'drive D: can be listed');
+ok(/files: working as/.test(read(AGENT_LOG)), 'the PC runs file operations as the signed-in user: ' + (read(AGENT_LOG).match(/files: working as .*/) || ['(not in the log)'])[0]);
+const above = await listOf(path.dirname(userHome));
+ok(!above.error, 'a folder above the user\'s own can be listed (' + path.dirname(userHome) + '): ' + (above.error || above.names.slice(0, 5).join(', ')));
+const secret = await listOf(path.join(OUTD, 'system-only'));
+ok(!!secret.error, 'a folder only the system account may open is refused: ' + (secret.error || JSON.stringify(secret)));
+const secretFile = await s.evaluate(p => rpc({ op: 'walk', paths: [p] }).then(() => 'read', e => 'refused: ' + String(e && e.message || e)), path.join(OUTD, 'system-only', 'secret.txt'));
+ok(/refused/.test(secretFile), 'and so is the file in it: ' + secretFile);
+await s.evaluate(p => openDir(p), OUTD);
+await until(async () => /outside\.txt/.test(await s.textContent('#list')), 10000);
+const dlDirNow = await s.evaluate(async () => { await loadFilePrefs(); return dlDir; });
+await s.evaluate(() => { const r = [...document.querySelectorAll('#list > *')].find(x => /outside\.txt/.test(x.textContent)); r.click(); });
+const gotD = await until(() => fs.existsSync(path.join(dlDirNow, 'outside.txt')) && read(path.join(dlDirNow, 'outside.txt')) === 'from drive D\n', 20000);
+ok(gotD, 'downloaded a file from drive D: into ' + dlDirNow);
+await s.evaluate(p => downloadFolder(p), path.join(OUTD, 'deep'));
+const gotDeep = await until(() => fs.existsSync(path.join(dlDirNow, 'deep', 'big.bin')) && fs.readFileSync(path.join(dlDirNow, 'deep', 'big.bin')).equals(fs.readFileSync(path.join(OUTD, 'deep', 'big.bin'))), 20000);
+ok(gotDeep, 'downloaded a whole folder from drive D:');
+const mine = path.join(OUT, 'mine.bin'); fs.writeFileSync(mine, crypto.randomBytes(3000));
+await s.evaluate(([p, d]) => uploadInto([p], d), [mine, OUTD]);
+const upD = await until(() => fs.existsSync(path.join(OUTD, 'mine.bin')) && fs.readFileSync(path.join(OUTD, 'mine.bin')).equals(fs.readFileSync(mine)), 20000);
+ok(upD, 'uploaded into drive D:');
+const owner = ps(`(Get-Acl '${OUTD}\\mine.bin').Owner`);
+ok(upD && !/SYSTEM/i.test(owner) && owner.toLowerCase().includes(String(process.env.USERNAME).toLowerCase()), 'what was uploaded belongs to the signed-in user, not the system account: ' + owner);
+const upSecret = await s.evaluate(([p, d]) => pushWalk({ items: [{ path: p, rel: 'mine.bin', dir: false, size: 3000 }], total: 3000, roots: ['mine.bin'] }, d, { set() {} }).then(() => 'written', e => 'refused: ' + String(e && e.message || e)), [mine, path.join(OUTD, 'system-only')]);
+ok(/refused/.test(upSecret) && !fs.existsSync(path.join(OUTD, 'system-only', 'mine.bin')), 'uploading into the system-only folder is refused: ' + upSecret);
+console.log('agent log:\n' + agentLogSince());
+
+// Large copies ask first, in the same corner card (100 KB here)
+section('large copies ask first');
+const large = path.join(OUT, 'large.bin'); fs.writeFileSync(large, crypto.randomBytes(200000));
+await s.evaluate(() => document.querySelectorAll('#acts .act').forEach(a => a.remove()));
+await s.evaluate(p => { sendClipFiles([p]); }, large);
+const askText = await until(async () => (await s.evaluate(() => { const a = document.querySelector('#acts .act.ask'); return a && a.textContent; })), 15000);
+ok(!!askText && /large\.bin/.test(askText), 'copying a large file asks first: ' + askText);
+await sleep(1500);
+ok(!(await acts()).some(a => /Copying|Ready/.test(a)), 'nothing is sent before the answer');
+await s.evaluate(() => document.querySelector('#acts .act.ask a').click());
+const readyBig = await until(async () => (await acts()).find(a => /Ready/.test(a)), 30000);
+ok(!!readyBig, 'answering Copy sends it: ' + readyBig);
+const pcList = await until(() => { const l = userFileList(); return /large\.bin/.test(l) && l; }, 15000);
+ok(!!pcList, 'and it is on the PC\'s clipboard, ready to paste: ' + pcList);
 console.log('agent log:\n' + agentLogSince());
 
 section('logs');

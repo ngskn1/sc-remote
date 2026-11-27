@@ -84,6 +84,7 @@
   .act a { color: var(--accent); cursor: pointer; white-space: nowrap; }
   .act progress { width: 100%; height: 5px; }
   .act.ok { border-color: var(--ok); } .act.bad { border-color: var(--bad); }
+  .act.ask { border-color: var(--accent); } .act.ask .top span { white-space: normal; }
   #auditBox { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 9; display: flex; align-items: center; justify-content: center; }
   #auditBox .abox { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; width: min(820px, 94vw); max-height: 80vh; display: flex; flex-direction: column; }
   #auditBox header { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
@@ -714,7 +715,7 @@ async function download(path) {
   }
 }
 /* ---------- transfers of files and whole folders (paths on this PC <-> the remote PC) ---------- */
-const CLIP_LIMIT = 2 * 1024 ** 3;            // larger copies don't go through the clipboard automatically
+const CLIP_LIMIT = +new URLSearchParams(location.search).get('clipLimit') || 2 * 1024 ** 3;   // larger copies ask first
 let pendingDrop = null, clipGen = 0, pullGen = 0;
 const hostLabel = () => creds.name || hostName || t('the remote PC');
 const describe = w => `${w.roots.length === 1 ? w.roots[0] : t('{0} items', w.roots.length)} (${fmtBytes(w.total)})`;
@@ -737,6 +738,21 @@ function activity(label) {
   a.fail = t => { R.log('transfer: ' + t); el.classList.add('bad'); bar.remove(); text.textContent = t; text.title = t; btn.textContent = '✕'; btn.onclick = () => el.remove(); close(12000); };
   return a;
 }
+
+// the same card asking a question: resolves true (yes) or false (✕, or replaced by a newer copy)
+function askCard(label, yes) {
+  const el = document.createElement('div'); el.className = 'act ask';
+  const top = document.createElement('div'); top.className = 'top';
+  const text = document.createElement('span'); text.textContent = label; text.title = label;
+  const ok = document.createElement('a'); ok.textContent = yes;
+  const no = document.createElement('a'); no.textContent = '✕'; no.title = t('Not now');
+  top.append(text, ok, no); el.append(top); $('acts').append(el);
+  let settle;
+  const answer = new Promise(r => { settle = v => { if (!settle) return; settle = null; el.remove(); r(v); }; });
+  ok.onclick = () => settle && settle(true); no.onclick = () => settle && settle(false);
+  return { answer, dismiss: () => settle && settle(false) };
+}
+let askingSend = null, askingGet = null;
 
 // send local files/folders (already walked) to the remote PC: into a fresh staging folder there, or into `dest`
 async function pushWalk(w, dest, a, stale = () => false) {
@@ -826,9 +842,16 @@ async function uploadFromHere(p) {
 // Ctrl+C on this PC → files go to the remote PC and onto its clipboard
 async function sendClipFiles(paths) {
   const gen = ++clipGen;
+  if (askingSend) askingSend.dismiss();          // (a newer copy replaces the question about an older one)
   let w;
   try { w = await R.fsWalk(paths); } catch (e) { toast(t('Could not read the copied files: ') + e.message); return; }
-  if (w.total > CLIP_LIMIT) { toast(t('The copied files are {0}, too big to send through the clipboard. Use Files ▸ Upload.', fmtBytes(w.total)), 9000); return; }
+  if (gen !== clipGen) return;
+  if (w.total > CLIP_LIMIT) {
+    const q = askingSend = askCard(t('📋 You copied {0}. That is large: copy it to {1} so it can be pasted there?', describe(w), hostLabel()), t('Copy'));
+    const yes = await q.answer;
+    if (askingSend === q) askingSend = null;
+    if (!yes || gen !== clipGen) return;
+  }
   const a = activity(t('📋 Copying {0} to {1}…', describe(w), hostLabel()));
   try {
     const { base, roots } = await pushWalk(w, 'stage', a, () => gen !== clipGen);
@@ -841,7 +864,13 @@ async function sendClipFiles(paths) {
 async function receiveClipFiles(m) {
   if (!q.clip) return;
   const gen = ++pullGen;
-  if (m.total > CLIP_LIMIT) { toast(t('Files copied on {0} are {1}, too big for the clipboard. Use the Files panel.', hostLabel(), fmtBytes(m.total)), 9000); return; }
+  if (askingGet) askingGet.dismiss();
+  if (m.total > CLIP_LIMIT) {
+    const q = askingGet = askCard(t('📋 {0} was copied on {1}. That is large: copy it here so it can be pasted?', describe(m), hostLabel()), t('Copy'));
+    const yes = await q.answer;
+    if (askingGet === q) askingGet = null;
+    if (!yes || gen !== pullGen) return;
+  }
   const a = activity(t('📋 Getting {0} from {1}…', describe(m), hostLabel()));
   try {
     const paths = await pullItems(m, a, () => gen !== pullGen);

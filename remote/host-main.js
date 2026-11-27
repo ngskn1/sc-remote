@@ -30,7 +30,9 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   const audit = (event, detail) => { if (labHost) labHost.audit(event, detail); else if (lab.audit) lab.audit(event, detail); };
   const preload = path.join(appDir, 'remote-preload.js');
   const page = name => path.join(appDir, 'app', name);
-  const q = () => ({ ...serverQuery(), ...(process.env.SCREENSHARE_DEBUG ? { debug: '3' } : {}) });
+  const q = () => ({ ...serverQuery(), ...(process.env.SCREENSHARE_DEBUG ? { debug: '3' } : {}),
+    // (tests: a smaller size from which copies ask first)
+    ...(process.env.SCREENSHARE_TEST && process.env.SCREENSHARE_TEST_CLIP_LIMIT ? { clipLimit: process.env.SCREENSHARE_TEST_CLIP_LIMIT } : {}) });
   const injector = new Injector(log);
 
   let engine = null;                   // hidden BrowserWindow running the host side
@@ -826,66 +828,98 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
       if (Date.now() - fs.statSync(p).mtimeMs > 24 * 3600 * 1000) fs.rmSync(p, { recursive: true, force: true });
     }
   } catch {}
-  function newStage() {
-    const p = path.join(stageRoot(), new Date().toISOString().replace(/[:.]/g, '-') + '-' + crypto.randomBytes(3).toString('hex'));
-    fs.mkdirSync(p, { recursive: true });
-    return p;
-  }
-  // rel uses '/' and must stay inside base (no "..", no absolute paths)
-  function safeJoin(base, rel) {
-    const parts = String(rel).split(/[\\/]+/).filter(x => x && x !== '.');
-    if (!parts.length || parts.some(x => x === '..')) throw new Error('bad path');
-    return path.join(base, ...parts.map(x => x.replace(/[:*?"<>|\x00-\x1f]/g, '_')));
-  }
-  async function walk(paths, limit = 50000) {
-    const items = []; let total = 0;
-    async function add(abs, rel) {
-      const st = await fs.promises.lstat(abs);
-      if (st.isSymbolicLink()) return;                  // don't follow links out of what was copied
-      if (items.length >= limit) throw new Error('too many files');
-      if (st.isDirectory()) {
-        items.push({ path: abs, rel, dir: true, size: 0 });
-        for (const n of await fs.promises.readdir(abs)) await add(path.join(abs, n), rel + '/' + n);
-      } else if (st.isFile()) { items.push({ path: abs, rel, dir: false, size: st.size }); total += st.size; }
-    }
-    for (const p of paths) await add(p, path.basename(p));
-    return { items, total, roots: paths.map(p => path.basename(p)) };
-  }
-  function uniqueNames(base, names) {
-    const used = new Set();
-    return names.map(n => {
-      const ext = path.extname(n), stem = n.slice(0, n.length - ext.length);
-      let name = n;
-      for (let i = 2; fs.existsSync(path.join(base, name)) || used.has(name); i++) name = `${stem} (${i})${ext}`;
-      used.add(name);
-      return name;
+  const F = require('./fsops');
+  const { safeJoin } = F;
+
+  /* ---------------- the Windows agent: file operations as the signed-in user ---------------- */
+  // The agent runs as the system account, which may read and change anything on the PC. So the members' file
+  // operations run in a worker started as the person signed in (remote/userfs.js, through the service's helper):
+  // Windows then lets them use exactly what that person may (other drives included), and what they create
+  // belongs to that person. With nobody signed in, only C:\Users\Public (see allowedPath).
+  let ufs = null, ufsDownUntil = 0, ufsIdle = null;
+  // (tests: SCREENSHARE_TEST_USERFS runs the worker here too, without the helper)
+  const testWorker = !!(process.env.SCREENSHARE_TEST && process.env.SCREENSHARE_TEST_USERFS);
+  function userWorker() {
+    if (!(AGENT && (process.platform === 'win32' || testWorker))) return null;
+    if (ufs) { clearTimeout(ufsIdle); ufsIdle = setTimeout(stopUserWorker, 10 * 60 * 1000); return ufs; }
+    const exe = helperExe();
+    if (!testWorker && (!exe || exe.endsWith('.js'))) return null;
+    if (Date.now() < ufsDownUntil) return null;
+    const { spawn } = require('child_process');
+    const script = path.join(__dirname, 'userfs.js');
+    const proc = testWorker
+      ? spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })
+      : spawn(exe, ['as-user', '--env', 'ELECTRON_RUN_AS_NODE=1', process.execPath, script], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const waiting = new Map(); let nextId = 1, buf = '', err = '';
+    const started = Date.now();
+    const w = {
+      proc, ready: null,
+      call(fn, ...args) {
+        return new Promise((resolve, reject) => {
+          if (ufs !== w) { reject(new Error('the file helper stopped')); return; }
+          const id = nextId++;
+          waiting.set(id, { resolve, reject });
+          proc.stdin.write(JSON.stringify({ id, fn, args: args.map(a => (a instanceof Uint8Array ? { b64: Buffer.from(a).toString('base64') } : a)) }) + '\n');
+        });
+      },
+    };
+    proc.stdout.setEncoding('utf8');
+    proc.stdout.on('data', d => {
+      buf += d;
+      for (let i; (i = buf.indexOf('\n')) >= 0; ) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        let m; try { m = JSON.parse(line); } catch { continue; }
+        const q = waiting.get(m.id); if (!q) continue;
+        waiting.delete(m.id);
+        const v = m.value && typeof m.value === 'object' && typeof m.value.b64 === 'string' ? Buffer.from(m.value.b64, 'base64') : m.value;
+        m.ok ? q.resolve(v) : q.reject(new Error(m.error || 'failed'));
+      }
     });
+    proc.stderr.setEncoding('utf8');
+    proc.stderr.on('data', d => { err = (err + d).slice(-400); });
+    proc.stdin.on('error', () => {});
+    const gone = code => {
+      if (ufs === w) ufs = null;
+      for (const q of waiting.values()) q.reject(new Error('the file helper stopped'));
+      waiting.clear();
+      if (Date.now() - started < 15000) ufsDownUntil = Date.now() + 10000;     // (nobody signed in: try again later)
+      log(`files: the helper for the signed-in user ended (${code})${err.trim() ? ': ' + err.trim() : ''}`);
+    };
+    proc.on('exit', gone);
+    proc.on('error', e => gone(e.message));
+    ufs = w;
+    w.ready = Promise.race([w.call('ping'), new Promise((_, no) => setTimeout(() => no(new Error('no answer')), 10000))])
+      .then(v => { log(`files: working as ${v.user}`); return true; }, e => { log(`files: the helper for the signed-in user did not start: ${e.message}`); return false; });
+    ufsIdle = setTimeout(stopUserWorker, 10 * 60 * 1000);
+    return w;
   }
+  function stopUserWorker() { if (ufs) { const p = ufs.proc; ufs = null; try { p.kill(); } catch {} } }
+  app.on('will-quit', stopUserWorker);
+
+  // Where a request's file operations run: here, or (the Windows agent, for members) as the signed-in user.
+  // restricted: here, but the agent can't run them as anyone else: only the allowed folders (allowedPath).
+  const LOCAL = { call: (fn, ...args) => Promise.resolve().then(() => F[fn](...args)), restricted: false };
+  async function backend(e) {
+    if (!(AGENT && isEngine(e.sender))) return LOCAL;
+    const w = userWorker();
+    if (w) {
+      if (await w.ready && ufs === w) return w;
+      if (ufs === w) { stopUserWorker(); ufsDownUntil = Date.now() + 10000; }
+    }
+    // Linux and Mac: the agent runs as the person signed in, so the system decides (unless it runs as root)
+    if (process.platform !== 'win32') return process.getuid && process.getuid() === 0 ? { ...LOCAL, restricted: true } : LOCAL;
+    return { ...LOCAL, restricted: true };
+  }
+  // the renderer's handle numbers: which side holds the file, and its number there
   const handles = new Map();
   let nextHandle = 1;
-  function uniquePath(dir, name) {
-    name = path.basename(String(name)).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_') || 'file';
-    let p = path.join(dir, name);
-    const ext = path.extname(name), base = name.slice(0, name.length - ext.length);
-    for (let n = 2; fs.existsSync(p); n++) p = path.join(dir, `${base} (${n})${ext}`);
-    return p;
-  }
+  const wrap = (B, r) => { const handle = nextHandle++; handles.set(handle, { B, h: r.handle }); return { ...r, handle }; };
+
   /* ---------------- lab agent: file access stays inside the signed-in user's folders ---------------- */
   // The agent runs as the system account, which may read and change anything on the PC. Members only get the
   // profile folder of whoever is signed in, the files that person copied, and the transfer folders.
   let clipOffered = [];
   const realOr = p => { try { return fs.realpathSync.native(p); } catch { return null; } };
-  // the real location of p (links and junctions resolved), also when the last parts don't exist yet
-  function realish(p) {
-    const rest = [];
-    for (let cur = p; ; ) {
-      const r = realOr(cur);
-      if (r) return path.join(r, ...rest);
-      const up = path.dirname(cur);
-      if (up === cur) return null;
-      rest.unshift(path.basename(cur)); cur = up;
-    }
-  }
   const within = (p, root) => { const rel = path.relative(root, p); return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel)); };
   // What someone copied at the PC may be fetched by the members, except from Windows' and programs' own folders,
   // other people's profiles or a whole drive. (The list of copied files comes from a program running as that
@@ -905,36 +939,23 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
     return true;
   }
   function allowedPath(p, write) {
-    const real = realish(path.resolve(p));
+    const real = F.realish(p);
     if (!real) return false;
     const roots = [userDirs().home, stageRoot()].map(realOr).filter(Boolean);
     if (!write) roots.push(...clipOffered.filter(offerable).map(realOr).filter(Boolean));
     return roots.some(r => within(real, r));
   }
-  function guard(e, p, write = false) {
+  // members' paths: anything when the operations run as someone who is allowed (see backend), else only allowedPath
+  function guard(B, p, write = false) {
     p = String(p);
-    if (AGENT && isEngine(e.sender) && !allowedPath(p, write)) throw new Error('On this PC, files can only be used in the signed-in user\'s folder');
+    if (B.restricted && !allowedPath(p, write)) throw new Error('On this PC, files can only be used in the signed-in user\'s folder');
     return p;
   }
-
-  async function listDir(dir, restricted = false) {
-    dir = path.resolve(dir || userDirs().home);
-    const names = await fs.promises.readdir(dir);
-    const entries = [];
-    for (const name of names) {
-      if (name.startsWith('.') && process.platform !== 'win32') continue;     // hidden files
-      try {
-        const st = await fs.promises.stat(path.join(dir, name));
-        entries.push({ name, dir: st.isDirectory(), size: st.size, mtime: st.mtimeMs });
-      } catch {}
-    }
-    entries.sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-    let parent = path.dirname(dir);
-    if (restricted && !allowedPath(parent, false)) parent = null;
-    const roots = restricted ? [userDirs().home] : process.platform === 'win32'
-      ? 'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(l => l + ':\\').filter(r => { try { fs.accessSync(r); return true; } catch { return false; } })
-      : ['/'];
-    return { path: dir, parent: parent !== dir ? parent : null, sep: path.sep, home: userDirs().home, roots, entries };
+  async function listDir(B, dir) {
+    const r = await B.call('list', dir || null, userDirs().home);
+    if (!B.restricted) return r;
+    // (only the allowed folders: no way up out of them)
+    return { ...r, parent: r.parent && allowedPath(r.parent, false) ? r.parent : null, roots: [userDirs().home] };
   }
 
   /* ---------------- windows ---------------- */
@@ -1361,48 +1382,33 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
     catch (e) { log(`clipboard: could not set ${payload && payload.kind}: ${e.message}`); throw e; }
   });
   h('remote:log', (_e, m) => log(String(m).slice(0, 500)));
-  h('fs:list', (e, dir) => listDir(dir ? guard(e, dir) : null, !!(AGENT && isEngine(e.sender))));
+  h('fs:list', async (e, dir) => { const B = await backend(e); return listDir(B, dir ? guard(B, dir) : null); });
   h('fs:downloads', () => { const d = path.join(userDirs().downloads, 'ScreenShare'); fs.mkdirSync(d, { recursive: true }); return d; });
-  h('fs:open-read', async (e, p) => {
-    p = guard(e, p);
-    const st = await fs.promises.stat(p);
-    if (st.isDirectory()) throw new Error('That is a folder');
-    const fd = await fs.promises.open(p, 'r');
-    const handle = nextHandle++; handles.set(handle, fd);
-    return { handle, size: st.size, name: path.basename(p) };
-  });
+  h('fs:open-read', async (e, p) => { const B = await backend(e); return wrap(B, await B.call('openRead', guard(B, p))); });
   h('fs:read', async (_e, handle, offset, length) => {
-    const fd = handles.get(handle); if (!fd) throw new Error('closed');
-    const buf = Buffer.alloc(Math.min(length, 1024 * 1024));
-    const { bytesRead } = await fd.read(buf, 0, buf.length, offset);
-    return new Uint8Array(buf.buffer, buf.byteOffset, bytesRead);
+    const x = handles.get(handle); if (!x) throw new Error('closed');
+    const b = await x.B.call('read', x.h, offset, length);
+    return new Uint8Array(b.buffer, b.byteOffset, b.length);
   });
   h('fs:open-write', async (e, dir, name) => {
-    const p = guard(e, uniquePath(String(dir), name), true);
-    const fd = await fs.promises.open(p, 'wx');
-    const handle = nextHandle++; handles.set(handle, fd);
-    return { handle, path: p };
+    const B = await backend(e);
+    const p = guard(B, await B.call('uniquePath', String(dir), name), true);
+    return wrap(B, await B.call('openWrite', String(dir), name, p));
   });
-  h('fs:write', async (_e, handle, data) => { const fd = handles.get(handle); if (!fd) throw new Error('closed'); await fd.write(Buffer.from(data)); });
+  h('fs:write', async (_e, handle, data) => { const x = handles.get(handle); if (!x) throw new Error('closed'); await x.B.call('write', x.h, data); });
   h('fs:close', async (e, handle, removePath) => {
-    const fd = handles.get(handle); handles.delete(handle);
-    if (fd) await fd.close().catch(() => {});
-    if (removePath) guard(e, removePath, true);
-    if (removePath) await fs.promises.rm(removePath, { force: true }).catch(() => {});
+    const x = handles.get(handle); handles.delete(handle);
+    const B = x ? x.B : await backend(e);
+    if (removePath) guard(B, removePath, true);
+    await B.call('close', x ? x.h : -1, removePath || null);
   });
   // (never from the lab agent: a file manager started by the system account would give the person at the PC its rights)
   h('fs:reveal', (_e, p) => { if (!AGENT) shell.showItemInFolder(String(p)); });
-  h('fs:walk', (e, paths) => walk((paths || []).map(p => guard(e, p))));
-  h('fs:stage', () => newStage());
-  h('fs:unique', (e, base, names) => uniqueNames(guard(e, base), (names || []).map(String)));
-  h('fs:mkdir-rel', async (e, base, rel) => { await fs.promises.mkdir(guard(e, safeJoin(base, rel), true), { recursive: true }); });
-  h('fs:open-write-rel', async (e, base, rel) => {
-    const p = guard(e, safeJoin(base, rel), true);
-    await fs.promises.mkdir(path.dirname(p), { recursive: true });
-    const fd = await fs.promises.open(p, 'w');
-    const handle = nextHandle++; handles.set(handle, fd);
-    return { handle, path: p };
-  });
+  h('fs:walk', async (e, paths) => { const B = await backend(e); return B.call('walk', (paths || []).map(p => guard(B, p))); });
+  h('fs:stage', async e => { const B = await backend(e); return B.call('stage', stageRoot()); });
+  h('fs:unique', async (e, base, names) => { const B = await backend(e); return B.call('unique', guard(B, base), (names || []).map(String)); });
+  h('fs:mkdir-rel', async (e, base, rel) => { const B = await backend(e); await B.call('mkdir', guard(B, safeJoin(base, rel), true)); });
+  h('fs:open-write-rel', async (e, base, rel) => { const B = await backend(e); return wrap(B, await B.call('openWritePath', guard(B, safeJoin(base, rel), true))); });
   h('fs:join', (_e, base, names) => (names || []).map(n => safeJoin(String(base), String(n))));
   h('remote:drop-files', async (e, paths, x, y) => isEngine(e.sender) ? dropFiles(paths, x, y) : { ok: false });
 

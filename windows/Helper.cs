@@ -4,7 +4,7 @@
 //                                         and reports which desktop has the input ("D Default", "D Winlogon", …)
 //   ScreenShareRemoteHelper.exe capture   JPEG frames of the input desktop (for the sign-in, lock and UAC screens,
 //                                         which the normal screen capture can't see)
-//   ScreenShareRemoteHelper.exe as-user <program> [args…]
+//   ScreenShareRemoteHelper.exe as-user [--env NAME=VALUE]… <program> [args…]
 //                                         runs a program as the person signed in at the screen, with this helper's
 //                                         stdin/stdout/stderr, and ends it when this helper ends. (Windows hides
 //                                         the user's clipboard from the system account: the clipboard is read
@@ -15,6 +15,7 @@
 // (SetThreadDesktop) before its input or screen reaches it.
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -156,16 +157,44 @@ static class AsUser {
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
   static string Quote(string a) { return a.Length > 0 && a.IndexOfAny(new[] { ' ', '\t', '"' }) < 0 ? a : "\"" + a.Replace("\"", "\\\"") + "\""; }
 
-  public static int Run(string[] args) {
-    if (args.Length < 2) { Console.Error.WriteLine("usage: ScreenShareRemoteHelper as-user <program> [args…]"); return 2; }
+  // the user's environment block with extra NAME=VALUE entries (Unicode, each ends with \0, then one more \0)
+  static IntPtr WithExtra(IntPtr block, List<string> extra) {
+    var vars = new List<string>();
+    if (block != IntPtr.Zero) {
+      for (IntPtr p = block; ; ) {
+        string v = Marshal.PtrToStringUni(p);
+        if (string.IsNullOrEmpty(v)) break;
+        vars.Add(v); p = new IntPtr(p.ToInt64() + (v.Length + 1) * 2);
+      }
+    }
+    foreach (string e in extra) {
+      string name = e.Substring(0, e.IndexOf('=') + 1);
+      vars.RemoveAll(v => v.StartsWith(name, StringComparison.OrdinalIgnoreCase));
+      vars.Add(e);
+    }
+    var sb = new StringBuilder();
+    foreach (string v in vars) { sb.Append(v); sb.Append('\0'); }
+    sb.Append('\0');
+    return Marshal.StringToHGlobalUni(sb.ToString());
+  }
+
+  public static int Run(string[] all) {
+    // as-user [--env NAME=VALUE]… <program> [args…]
+    var extra = new List<string>(); int at = 1;
+    while (at + 1 < all.Length && all[at] == "--env" && all[at + 1].IndexOf('=') > 0) { extra.Add(all[at + 1]); at += 2; }
+    var argl = new List<string> { all[0] };
+    for (int i = at; i < all.Length; i++) argl.Add(all[i]);
+    string[] args = argl.ToArray();
+    if (args.Length < 2) { Console.Error.WriteLine("usage: ScreenShareRemoteHelper as-user [--env NAME=VALUE]... <program> [args...]"); return 2; }
     IntPtr token;
     // the person signed in to the session this helper runs in (SC-Remote's agent's session), else at the screen
     uint session;
     if (!ProcessIdToSessionId(GetCurrentProcessId(), out session) || session == 0) session = WTSGetActiveConsoleSessionId();
     if (!WTSQueryUserToken(session, out token)) { Console.Error.WriteLine("nobody is signed in (" + Marshal.GetLastWin32Error() + ")"); return 3; }
-    IntPtr env = IntPtr.Zero, job = IntPtr.Zero;
+    IntPtr env = IntPtr.Zero, job = IntPtr.Zero, merged = IntPtr.Zero;
     try {
       if (!CreateEnvironmentBlock(out env, token, false)) env = IntPtr.Zero;
+      if (extra.Count > 0) merged = WithExtra(env, extra);
       // the program gets this helper's own stdin/stdout/stderr (pipes to SC-Remote)
       IntPtr hin = GetStdHandle(-10), hout = GetStdHandle(-11), herr = GetStdHandle(-12);
       foreach (IntPtr h in new[] { hin, hout, herr }) SetHandleInformation(h, 1, 1);           // HANDLE_FLAG_INHERIT
@@ -176,7 +205,7 @@ static class AsUser {
       for (int i = 1; i < args.Length; i++) { if (i > 1) cmd.Append(' '); cmd.Append(Quote(args[i])); }
       PROCESS_INFORMATION pi;
       // suspended until it's in a job that ends it with this helper (KILL_ON_JOB_CLOSE)
-      if (!CreateProcessAsUser(token, args[1], cmd, IntPtr.Zero, IntPtr.Zero, true, 0x00000400 | 0x08000000 | 0x00000004, env, null, ref si, out pi)) {
+      if (!CreateProcessAsUser(token, args[1], cmd, IntPtr.Zero, IntPtr.Zero, true, 0x00000400 | 0x08000000 | 0x00000004, merged != IntPtr.Zero ? merged : env, null, ref si, out pi)) {
         Console.Error.WriteLine("could not start it as the signed-in user (" + Marshal.GetLastWin32Error() + ")"); return 1;
       }
       job = CreateJobObject(IntPtr.Zero, null);
@@ -190,6 +219,7 @@ static class AsUser {
       return (int)code;
     } finally {
       if (env != IntPtr.Zero) DestroyEnvironmentBlock(env);
+      if (merged != IntPtr.Zero) Marshal.FreeHGlobal(merged);
       CloseHandle(token);
     }
   }
