@@ -1,0 +1,61 @@
+# Cross-machine check of SC-Remote: a Windows computer (SC-Remote installed) controls a Linux PC on another machine,
+# each with its own real clipboard, and copies text and files both ways (test/cross). Run it from the Actions tab.
+name: SC-Remote cross test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  creds:
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.c.outputs.id }}
+      password: ${{ steps.c.outputs.password }}
+    steps:
+      - id: c
+        run: |
+          pw=$(openssl rand -hex 12)
+          echo "id=$((100000000 + $(od -An -N4 -tu4 /dev/urandom) % 899999999))" >> "$GITHUB_OUTPUT"
+          echo "password=$pw" >> "$GITHUB_OUTPUT"
+
+  linux-pc:
+    needs: creds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb xclip
+      - run: npm ci --ignore-scripts && node node_modules/electron/install.js && node scripts/copy-assets.js
+      - name: Be the PC (until the Windows computer is done)
+        env:
+          CROSS_ID: ${{ needs.creds.outputs.id }}
+          CROSS_PASSWORD: ${{ needs.creds.outputs.password }}
+        run: test/cross/linux-host.sh
+
+  windows-controller:
+    needs: creds
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run dist:remote
+      - name: Install SC-Remote
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist-remote\SC-Remote-Setup-*.exe | Select-Object -First 1
+          Start-Process $setup.FullName -ArgumentList '/S' -Wait
+      - name: Control the Linux PC and copy both ways
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+          CROSS_ID: ${{ needs.creds.outputs.id }}
+          CROSS_PASSWORD: ${{ needs.creds.outputs.password }}
+        run: |
+          npm install --no-save playwright@1.56.1
+          node test/cross/windows-controller.mjs
