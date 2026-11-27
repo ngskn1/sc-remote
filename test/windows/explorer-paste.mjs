@@ -23,6 +23,8 @@ const ask = async line => { const n = out.length; helper.stdin.write(line + '\n'
 for (let i = 0; i < 100 && !/READY/.test(out); i++) await sleep(100);
 console.log('helper:', await ask('SET ' + JSON.stringify([FILE])));
 await report('SC-Remote helper SET (Win32 CF_HDROP + Preferred DropEffect), helper running');
+await sleep(8000);
+await report('... 8 s later, the helper still running and waiting for its next request');
 console.log('helper GET:', await ask('GET'));
 await report('... after the helper read it back (GET)');
 helper.stdin.end(); await sleep(1500);

@@ -93,8 +93,9 @@ public static class SCClip {
     return owner.Handle;
   }
   // another program may have it open for a moment
-  static void Open() {
-    for (int i = 0; i < 40; i++) { if (OpenClipboard(Owner())) return; Thread.Sleep(25); }
+  static void Open() { Open(Owner()); }
+  static void Open(IntPtr h) {
+    for (int i = 0; i < 40; i++) { if (OpenClipboard(h)) return; Thread.Sleep(25); }
     throw new Exception("the clipboard is busy (error " + Marshal.GetLastWin32Error() + ")");
   }
   static uint seq = 0; static string[] last = new string[0];
@@ -184,12 +185,18 @@ public static class SCClip {
     BitConverter.GetBytes(1).CopyTo(drop, 16);                  // fWide
     names.CopyTo(drop, 20);
     IntPtr hDrop = Global(drop), hEffect = Global(BitConverter.GetBytes(1));     // DROPEFFECT_COPY
-    Open();
+    // The window that empties the clipboard becomes its owner. This helper then waits for its next request without
+    // handling window messages, so after a few seconds Windows counts that window as not responding, and Explorer
+    // greys out Paste. So a window just for this, gone right after: the clipboard keeps the files, with no owner.
+    var w = new System.Windows.Forms.NativeWindow(); var cp = new System.Windows.Forms.CreateParams(); cp.Parent = new IntPtr(-3); w.CreateHandle(cp);
     try {
-      EmptyClipboard();
-      if (SetClipboardData(CF_HDROP, hDrop) == IntPtr.Zero) { GlobalFree(hDrop); GlobalFree(hEffect); throw new Exception("Windows refused the file list (error " + Marshal.GetLastWin32Error() + ")"); }
-      if (SetClipboardData(RegisterClipboardFormat("Preferred DropEffect"), hEffect) == IntPtr.Zero) GlobalFree(hEffect);
-    } finally { CloseClipboard(); }
+      Open(w.Handle);
+      try {
+        EmptyClipboard();
+        if (SetClipboardData(CF_HDROP, hDrop) == IntPtr.Zero) { GlobalFree(hDrop); GlobalFree(hEffect); throw new Exception("Windows refused the file list (error " + Marshal.GetLastWin32Error() + ")"); }
+        if (SetClipboardData(RegisterClipboardFormat("Preferred DropEffect"), hEffect) == IntPtr.Zero) GlobalFree(hEffect);
+      } finally { CloseClipboard(); }
+    } finally { w.DestroyHandle(); }
   }
 }
 '@

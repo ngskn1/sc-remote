@@ -94,6 +94,7 @@ if (got) {
   ok(fs.existsSync(path.join(DEST, 'from-linux.txt')) && fs.readFileSync(path.join(DEST, 'from-linux.txt'), 'utf8') === 'made on linux', 'pasting it in a folder gives the same file');
   // what a person does: Paste in Explorer (the folder's own Paste command, which is greyed out when Explorer
   // doesn't accept what is on the clipboard), and Ctrl+V in an Explorer window
+  await sleep(8000);           // (Windows counts a window as not responding after 5 s)
   const EX = path.join(OUT, 'explorer-paste'); fs.mkdirSync(EX, { recursive: true });
   console.log('Explorer\'s commands on a folder:', ps(`$sh = New-Object -ComObject Shell.Application; $f = $sh.NameSpace('${OUT}').ParseName('explorer-paste'); ($f.Verbs() | ForEach-Object { $_.Name }) -join ' | '`));
   console.log('Paste (the folder\'s command):', ps(`$sh = New-Object -ComObject Shell.Application; $f = $sh.NameSpace('${OUT}').ParseName('explorer-paste'); $v = $f.Verbs() | Where-Object { $_.Name -replace '&','' -eq 'Paste' }; if ($v) { $v.DoIt(); Start-Sleep 3; 'done' } else { 'no Paste command (greyed out)' }`));

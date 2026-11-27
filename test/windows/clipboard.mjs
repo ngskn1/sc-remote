@@ -89,6 +89,11 @@ const onClip = userFileList();
 console.log('the PC\'s clipboard (as the signed-in user):', onClip);
 const pasted = onClip.split(/\r?\n/).find(p => /report\.txt$/.test(p));
 ok(!!pasted, 'the file is on the PC\'s clipboard, ready for Ctrl+V');
+// what a person sees: Explorer's Paste (greyed out when Explorer doesn't accept the clipboard), a while later
+await sleep(8000);
+fs.mkdirSync(path.join(OUT, 'paste-target'), { recursive: true });
+const pcVerbs = ps(`$sh = New-Object -ComObject Shell.Application; ($sh.NameSpace('${OUT}').ParseName('paste-target').Verbs() | ForEach-Object { $_.Name -replace '&','' } | Where-Object { $_ }) -join ', '`);
+ok(/Paste/.test(pcVerbs), 'Explorer on the PC offers Paste for it, 8 s later: ' + pcVerbs);
 if (pasted) {
   console.log('readable by the user:', ps(`Get-Content -LiteralPath '${pasted}'`));
   try { console.log('its permissions:', execFileSync('icacls', [pasted], { encoding: 'utf8' }).trim()); } catch {}
