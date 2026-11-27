@@ -216,6 +216,12 @@ const secret = await listOf(path.join(OUTD, 'system-only'));
 ok(!!secret.error, 'a folder the signed-in user is refused is refused here too: ' + (secret.error || JSON.stringify(secret)));
 const secretFile = await s.evaluate(p => rpc({ op: 'walk', paths: [p] }).then(() => 'read', e => 'refused: ' + String(e && e.message || e)), path.join(OUTD, 'system-only', 'secret.txt'));
 ok(/refused/.test(secretFile), 'and so is the file in it: ' + secretFile);
+// the drives as buttons: D: from the panel itself
+const chips = await until(async () => { const c = await s.evaluate(() => [...document.querySelectorAll('#places .chip')].map(c => c.textContent)); return c.includes('💽 D:') && c; }, 10000);
+ok(!!chips, 'the PC\'s drives are buttons in the Files panel: ' + JSON.stringify(chips));
+await s.evaluate(() => [...document.querySelectorAll('#places .chip')].find(c => c.textContent === '💽 D:').click());
+const onD = await until(async () => (await s.inputValue('#path')).toUpperCase() === 'D:\\' && /sc-test-/.test(await s.textContent('#list')), 10000);
+ok(onD, 'clicking 💽 D: opens drive D: (' + await s.inputValue('#path') + ')');
 await s.evaluate(p => openDir(p), OUTD);
 await until(async () => /outside\.txt/.test(await s.textContent('#list')), 10000);
 const dlDirNow = await s.evaluate(async () => { await loadFilePrefs(); return dlDir; });

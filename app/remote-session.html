@@ -652,6 +652,8 @@ function render() {
   $('favBtn').textContent = isFav ? '★' : '☆'; $('favBtn').classList.toggle('on', isFav); $('favBtn').disabled = !d;
   $('favBtn').title = t(isFav ? 'Remove this folder from favorites' : 'Add this folder to favorites');
   const chips = [];
+  // Windows drives (C:, D:…): the way to another drive, since going up stops at a drive's top folder
+  for (const r of (d && d.roots) || []) if (/^[A-Za-z]:\\$/.test(r)) chips.push(chip('💽 ' + r.slice(0, 2), r, false));
   if (!remote && places) for (const [label, p] of [['Desktop', places.desktop], ['Documents', places.documents], ['Downloads', places.downloads]]) if (p) chips.push(chip(t(label), p, false));
   for (const p of favs) chips.push(chip('★ ' + baseName(p), p, true));
   $('places').replaceChildren(...chips);
