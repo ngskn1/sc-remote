@@ -38,6 +38,8 @@ contextBridge.exposeInMainWorld('remoteApp', {
   openFeedback: () => inv('app:open-feedback'),
   updateInfo: () => inv('update:get'),
   updateInstall: () => inv('update:install'),
+  updateCheck: () => inv('update:check'),
+  updateDismiss: () => inv('update:dismiss'),
   onUpdate: cb => ipcRenderer.on('update:changed', (_e, u) => cb(u)),
   signedIn: password => inv('session:signed-in', password),
   filesDir: dir => inv('session:files-dir', dir),

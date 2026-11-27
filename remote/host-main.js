@@ -437,7 +437,7 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   const agentLang = () => { const l = process.env.SCREENSHARE_LANG || hostOptions().lang; return l === 'pt' || l === 'en' ? l : defaultLang; };
   ipcMain.handle('app:info', () => ({
     product, version: app.getVersion(), lang: AGENT ? agentLang() : userLang(),
-    feedback: !!feedbackUrl, chooseLang: trayApp, canHost, platform: process.platform,
+    feedback: !!feedbackUrl, chooseLang: trayApp, canHost, platform: process.platform, canUpdate: !!update,
   }));
   ipcMain.handle('app:set-lang', (_e, l) => {
     if (l !== 'pt' && l !== 'en') return userLang();
@@ -642,6 +642,19 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   }
   ipcMain.handle('update:get', () => upd);
   ipcMain.handle('update:install', () => installUpdate());
+  // "Check for updates": now, rather than at the next scheduled check (every 12 h)
+  ipcMain.handle('update:check', async () => {
+    if (!update) return { ok: false, upd };
+    if (upd.state === 'updated' || (upd.state === 'failed' && !upd.version)) setUpd({ state: 'idle' });   // (an old notice makes way)
+    const ok = await checkForUpdate();
+    log(`update check (asked for): ${ok ? upd.state === 'available' ? 'version ' + upd.version + ' available' : 'up to date' : 'failed'}`);
+    return { ok, upd };
+  });
+  // the ✕ on the notice after an update (or a failed one): gone until something new happens
+  ipcMain.handle('update:dismiss', () => {
+    if (upd.state === 'updated' || upd.state === 'failed') setUpd({ state: 'idle', error: '' });
+    return upd;
+  });
 
   /* ---------------- tray ---------------- */
   function updateTray() {

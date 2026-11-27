@@ -8,8 +8,8 @@ SC-Remote is the remote-desktop-only edition of ScreenShare, for the group's Win
 
 | File | What it is |
 |---|---|
-| `SC-Remote-Setup-1.5.4.exe` | Windows 10/11 installer: the app, plus the background service that makes the PC reachable. |
-| `SC-Remote-1.5.4-mac.dmg` | Mac (Intel and Apple Silicon, macOS 12 or newer): connects to other PCs. The Mac itself can't be controlled. |
+| `SC-Remote-Setup-1.5.5.exe` | Windows 10/11 installer: the app, plus the background service that makes the PC reachable. |
+| `SC-Remote-1.5.5-mac.dmg` | Mac (Intel and Apple Silicon, macOS 12 or newer): connects to other PCs. The Mac itself can't be controlled. |
 | `SC-Remote-x86_64.AppImage` | Linux (64-bit): connects to other PCs, and can be controlled while someone is signed in. |
 
 All three are on [the Releases page](https://github.com/ngskn1/sc-remote/releases/latest), always in their newest version.
@@ -37,7 +37,7 @@ The installer also does the following:
 
 **PCs you only connect from** (your own laptop, say) use the same installer. Untick **Allow remote access to this PC** and click Save. The service then stays idle and nobody can connect to that PC.
 
-**Silent install** (`SC-Remote-Setup-1.5.4.exe /S`) skips the settings window, and remote access stays off. To set it up later, open the app on that PC and click **Configurar o acesso remoto…** (Set up remote access…).
+**Silent install** (`SC-Remote-Setup-1.5.5.exe /S`) skips the settings window, and remote access stays off. To set it up later, open the app on that PC and click **Configurar o acesso remoto…** (Set up remote access…).
 
 ## 2. Connecting
 
@@ -48,7 +48,7 @@ Open SC-Remote (from the Start menu, or the tray icon) and go to **Conectar a um
 - Clipboard, file copy-paste, drag-and-drop and the Files panel work as in ScreenShare. On these PCs, file operations run as the person signed in at the PC: you can use the same files and drives they can (other drives, other folders), and Windows refuses the rest, as it would refuse them. What you upload belongs to that person. The PC's drives are buttons at the top of the panel (💽 C:, 💽 D:…). When nobody is signed in, only `C:\Users\Public` is available. (The service itself has full system rights; it doesn't use them for files.)
 - Copying files of 2 GB or more (Ctrl+C on either side) asks first, in the same corner card that shows copies: **Copiar** (Copy) sends them so they can be pasted on the other side, **✕** leaves them. A newer copy replaces the question.
 - Text, pictures and files copied on the PC (Ctrl+C, or Copy in Explorer) can be pasted on your computer, and the other way round. Files copied from Windows' own folders (`C:\Windows`, `Program Files`, `ProgramData`), from another user's profile, or a whole drive, are not passed on.
-- **The Files panel** (the **Files** button; **Arquivos** in Portuguese) has two tabs. **Em <PC>** (On <PC>) browses the PC: click a file to download it, or ⬇ on a folder to download all of it. The bar at the bottom says where downloads go; **Alterar** (Change) picks another folder. **Neste computador** (On this computer) browses your own computer: click a file, or ⬆ on a folder, to upload it into the folder open in the first tab. **Salvar downloads aqui** (Save downloads here) makes the folder you're in the download folder. Click ☆ to keep a folder as a favourite: favourites for the PC are kept per PC, and those for your own computer are shared by all PCs.
+- **The Files panel** (the **Files** button; **Arquivos** in Portuguese) has two tabs. **Em <PC>** (On <PC>) browses the PC: click a file to download it, or ⬇ on a folder to download all of it. The bar at the bottom says where downloads go; **Alterar** (Change) picks another folder. **Neste computador** (On this computer) browses your own computer: click a file, or ⬆ on a folder, to upload it into the folder open in the first tab. **Salvar downloads aqui** (Save downloads here) makes the folder you're in the download folder. Click **☆ Favorito** (Favorite) to keep a folder as a favourite: they show as buttons at the top of the panel, also in later sessions. Favourites for the PC are kept per PC, and those for your own computer are shared by all PCs.
 
 ## 3. Changing the password or settings
 
@@ -71,11 +71,11 @@ SC-Remote is in Portuguese by default. The **Idioma** (Language) menu at the bot
 
 ## Updates
 
-SC-Remote looks for a new version every time it starts, and twice a day while it sits in the tray. When there is one:
+SC-Remote looks for a new version every time it starts, and twice a day while it sits in the tray. **Procurar atualizações** (Check for updates), at the bottom of the window, looks right away and says what it found. When there is one:
 
 - **Este computador** (This computer) shows **"Uma nova versão do SC-Remote está disponível"** (A new version is available) with a **Reiniciar e atualizar** (Restart and update) button. The tray menu gets **Atualizar para a versão …** (Update to version …).
 - Clicking the button hands the update to the SC-Remote service. The service downloads the update from GitHub, checks that it's signed with the group's release key and that the file is intact, and installs it. No administrator prompt appears, and the PC's ID, password and settings stay as they are.
-- SC-Remote closes, and about a minute later it reopens by itself showing **"O SC-Remote foi atualizado para a versão …"** (was updated to version …). Anyone connected to that PC is disconnected while it installs and can reconnect afterwards.
+- SC-Remote closes, and about a minute later it reopens by itself showing **"O SC-Remote foi atualizado para a versão …"** (was updated to version …). Its **✕** closes that notice. Anyone connected to that PC is disconnected while it installs and can reconnect afterwards.
 - If something goes wrong, the notice says what happened and offers **Tentar de novo** (Try again). The PC keeps the version it had and stays reachable.
 
 Nothing is installed without someone clicking the button, so PCs nobody uses keep their version until someone does. Any user signed in to the PC can start an update, but only an official, signed version newer than the installed one is ever installed.
@@ -141,7 +141,7 @@ If any step fails, send me the logs from section 5.
 
 ### On a Mac (connects only)
 
-1. Download `SC-Remote-1.5.4-mac.dmg`, open it and drag **SC-Remote** into **Applications**.
+1. Download `SC-Remote-1.5.5-mac.dmg`, open it and drag **SC-Remote** into **Applications**.
 2. Open SC-Remote. The first time, macOS refuses ("Apple could not verify…"), because the app isn't registered with Apple (that costs US$99 a year). Click **Done**, then go to **System Settings › Privacy & Security**, scroll down to the message about SC-Remote and click **Open Anyway**. Confirm with your Mac's password. From then on it opens normally.
    - On macOS 14 or older you can instead Control-click SC-Remote in Applications and choose **Open**.
    - If macOS says the app "is damaged", run this once in Terminal and open it again: `xattr -dr com.apple.quarantine /Applications/SC-Remote.app`

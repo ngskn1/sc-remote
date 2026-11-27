@@ -41,6 +41,9 @@
   .updbox { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; border: 1px solid var(--accent); background: rgba(91,140,255,.08); border-radius: 8px; padding: 10px 12px; margin: 0 0 12px; }
   .updbox.bad { border-color: var(--bad); background: rgba(255,107,107,.08); } .updbox.ok { border-color: var(--ok); background: rgba(62,207,142,.08); }
   .updbox span { flex: 1; min-width: 220px; }
+  .updbox .x { background: none; border: none; color: var(--muted); padding: 2px 6px; font-size: 15px; cursor: pointer; }
+  .updbox .x:hover { color: var(--text); }
+  #updCheck.busy { color: var(--muted); pointer-events: none; }
   .updbox.busy span::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 8px; border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; vertical-align: -1px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   /* who connected to this PC */
@@ -88,7 +91,7 @@
 
   <section id="svcSec" class="hidden">
     <h2>This computer</h2>
-    <div id="upd" class="updbox hidden"><span id="updText"></span><button id="updBtn" class="primary hidden"></button></div>
+    <div id="upd" class="updbox hidden"><span id="updText"></span><button id="updBtn" class="primary hidden"></button><button id="updClose" class="x hidden" title="Close">✕</button></div>
     <div class="row">
       <div><div class="muted">ID</div><div class="id" id="sid">—</div></div>
       <button id="scopy">Copy</button>
@@ -122,6 +125,7 @@
   <footer>
     <a href="#" id="feedback" class="hidden">Report a problem or send feedback</a>
     <span id="ver" class="hidden"></span>
+    <a href="#" id="updCheck" class="hidden">Check for updates</a>
     <label id="langBox" class="hidden"><span>Language</span><select id="lang"><option value="pt">Português (Brasil)</option><option value="en">English</option></select></label>
   </footer>
 </main>
@@ -258,7 +262,22 @@ function renderUpdate(u) {
   $('upd').className = 'updbox ' + cls + (text ? '' : ' hidden');
   $('updText').textContent = text;
   $('updBtn').textContent = label; $('updBtn').classList.toggle('hidden', !label); $('updBtn').disabled = false;
+  $('updClose').classList.toggle('hidden', !(u.state === 'updated' || u.state === 'failed'));
 }
+$('updClose').onclick = async () => renderUpdate(await R.updateDismiss());
+// footer: check now; the answer shows in the link for a few seconds (a new version also shows the notice above)
+let checkReset = null;
+$('updCheck').onclick = async e => {
+  e.preventDefault();
+  const a = $('updCheck'); clearTimeout(checkReset);
+  a.classList.add('busy'); a.textContent = t('Checking for updates…');
+  const r = await R.updateCheck();
+  renderUpdate(r.upd);
+  a.classList.remove('busy');
+  a.textContent = !r.ok ? t('Could not check for updates (no connection?)')
+    : r.upd.state === 'available' ? t('Version {0} is available', r.upd.version) : t('You have the latest version');
+  checkReset = setTimeout(() => { a.textContent = t('Check for updates'); }, 8000);
+};
 $('updBtn').onclick = async () => { $('updBtn').disabled = true; renderUpdate(await R.updateInstall()); };
 R.onUpdate(renderUpdate);
 
@@ -276,6 +295,7 @@ let product = 'ScreenShare';
     $('lang').onchange = async () => { await R.setLang($('lang').value); location.reload(); };
     $('ver').textContent = `${info.product} ${info.version}`; $('ver').classList.remove('hidden');
   }
+  if (info.canUpdate) $('updCheck').classList.remove('hidden');
   if (info.feedback) { $('feedback').classList.remove('hidden'); $('feedback').onclick = e => { e.preventDefault(); R.openFeedback(); }; }
   $('hostNote').textContent = t('With remote access on, {0} keeps running in the tray after you close its windows. Anyone with the ID and password can control this PC.', product);
   svc = await R.serviceInfo();
