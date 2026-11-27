@@ -200,10 +200,10 @@ const OUTD = 'D:\\sc-test-' + id;
 fs.mkdirSync(path.join(OUTD, 'deep'), { recursive: true });
 fs.writeFileSync(path.join(OUTD, 'outside.txt'), 'from drive D\n');
 fs.writeFileSync(path.join(OUTD, 'deep', 'big.bin'), crypto.randomBytes(5000));
-// a folder only the system account may open (the user, even an administrator, may not)
+// a folder this user is refused (a deny entry for them: it holds even for an administrator); the system account isn't
 fs.mkdirSync(path.join(OUTD, 'system-only'));
 fs.writeFileSync(path.join(OUTD, 'system-only', 'secret.txt'), 'secret');
-console.log(ps(`icacls '${OUTD}\\system-only' /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F'`));
+console.log(ps(`icacls '${OUTD}\\system-only' /deny "$($env:USERNAME):(OI)(CI)F"`));
 console.log('can this user list it?', ps(`try { Get-ChildItem '${OUTD}\\system-only' -ErrorAction Stop | Out-Null; 'yes' } catch { 'no: ' + $_.Exception.Message }`));
 const listOf = p => s.evaluate(p => rpc({ op: 'list', path: p }).then(r => ({ path: r.path, parent: r.parent, roots: r.roots, names: r.entries.map(e => e.name) }), e => ({ error: String(e && e.message || e) })), p);
 const dRoot = await listOf('D:\\');
@@ -213,7 +213,7 @@ ok(/files: working as/.test(read(AGENT_LOG)), 'the PC runs file operations as th
 const above = await listOf(path.dirname(userHome));
 ok(!above.error, 'a folder above the user\'s own can be listed (' + path.dirname(userHome) + '): ' + (above.error || above.names.slice(0, 5).join(', ')));
 const secret = await listOf(path.join(OUTD, 'system-only'));
-ok(!!secret.error, 'a folder only the system account may open is refused: ' + (secret.error || JSON.stringify(secret)));
+ok(!!secret.error, 'a folder the signed-in user is refused is refused here too: ' + (secret.error || JSON.stringify(secret)));
 const secretFile = await s.evaluate(p => rpc({ op: 'walk', paths: [p] }).then(() => 'read', e => 'refused: ' + String(e && e.message || e)), path.join(OUTD, 'system-only', 'secret.txt'));
 ok(/refused/.test(secretFile), 'and so is the file in it: ' + secretFile);
 await s.evaluate(p => openDir(p), OUTD);
@@ -229,10 +229,10 @@ const mine = path.join(OUT, 'mine.bin'); fs.writeFileSync(mine, crypto.randomByt
 await s.evaluate(([p, d]) => uploadInto([p], d), [mine, OUTD]);
 const upD = await until(() => fs.existsSync(path.join(OUTD, 'mine.bin')) && fs.readFileSync(path.join(OUTD, 'mine.bin')).equals(fs.readFileSync(mine)), 20000);
 ok(upD, 'uploaded into drive D:');
-const owner = ps(`(Get-Acl '${OUTD}\\mine.bin').Owner`);
+const owner = ps(`[System.IO.File]::GetAccessControl('${OUTD}\\mine.bin').GetOwner([System.Security.Principal.NTAccount]).Value`);
 ok(upD && !/SYSTEM/i.test(owner) && owner.toLowerCase().includes(String(process.env.USERNAME).toLowerCase()), 'what was uploaded belongs to the signed-in user, not the system account: ' + owner);
 const upSecret = await s.evaluate(([p, d]) => pushWalk({ items: [{ path: p, rel: 'mine.bin', dir: false, size: 3000 }], total: 3000, roots: ['mine.bin'] }, d, { set() {} }).then(() => 'written', e => 'refused: ' + String(e && e.message || e)), [mine, path.join(OUTD, 'system-only')]);
-ok(/refused/.test(upSecret) && !fs.existsSync(path.join(OUTD, 'system-only', 'mine.bin')), 'uploading into the system-only folder is refused: ' + upSecret);
+ok(/refused/.test(upSecret) && !fs.existsSync(path.join(OUTD, 'system-only', 'mine.bin')), 'uploading into that folder is refused: ' + upSecret);
 console.log('agent log:\n' + agentLogSince());
 
 // Large copies ask first, in the same corner card (100 KB here)
