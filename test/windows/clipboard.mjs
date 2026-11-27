@@ -229,8 +229,11 @@ const mine = path.join(OUT, 'mine.bin'); fs.writeFileSync(mine, crypto.randomByt
 await s.evaluate(([p, d]) => uploadInto([p], d), [mine, OUTD]);
 const upD = await until(() => fs.existsSync(path.join(OUTD, 'mine.bin')) && fs.readFileSync(path.join(OUTD, 'mine.bin')).equals(fs.readFileSync(mine)), 20000);
 ok(upD, 'uploaded into drive D:');
-const owner = ps(`[System.IO.File]::GetAccessControl('${OUTD}\\mine.bin').GetOwner([System.Security.Principal.NTAccount]).Value`);
-ok(upD && !/SYSTEM/i.test(owner) && owner.toLowerCase().includes(String(process.env.USERNAME).toLowerCase()), 'what was uploaded belongs to the signed-in user, not the system account: ' + owner);
+// (the owner a file gets when this user makes it themselves: an administrator's files belong to Administrators)
+fs.writeFileSync(path.join(OUTD, 'made-by-user.txt'), 'x');
+const ownerOf = f => ps(`[System.IO.File]::GetAccessControl('${f}').GetOwner([System.Security.Principal.NTAccount]).Value`);
+const owner = ownerOf(path.join(OUTD, 'mine.bin')), userOwner = ownerOf(path.join(OUTD, 'made-by-user.txt'));
+ok(upD && owner === userOwner && !/ERROR/.test(owner), `what was uploaded has the owner the user's own files get: ${owner} (the user's: ${userOwner})`);
 const upSecret = await s.evaluate(([p, d]) => pushWalk({ items: [{ path: p, rel: 'mine.bin', dir: false, size: 3000 }], total: 3000, roots: ['mine.bin'] }, d, { set() {} }).then(() => 'written', e => 'refused: ' + String(e && e.message || e)), [mine, path.join(OUTD, 'system-only')]);
 ok(/refused/.test(upSecret) && !fs.existsSync(path.join(OUTD, 'system-only', 'mine.bin')), 'uploading into that folder is refused: ' + upSecret);
 console.log('agent log:\n' + agentLogSince());
