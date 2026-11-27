@@ -96,6 +96,37 @@ if (got) {
 await sleep(5000);
 ok(/from-linux\.txt/.test(winFiles()), 'and still on Windows\' clipboard 5 s later: ' + winFiles());
 
+// names as people write them: accents and spaces (both ways)
+section('files with accents and spaces, both ways');
+await clearActs();
+const ACC = path.join(OUT, 'acentuação e espaços'); fs.mkdirSync(ACC, { recursive: true });
+const SRC2 = path.join(ACC, 'relatório final ç.txt'); fs.writeFileSync(SRC2, 'conteúdo do windows');
+const explorerCopy2 = spawn('powershell.exe', ['-NoProfile', '-Sta', '-Command',
+  `Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.DataObject; ` +
+  `$d.SetData([System.Windows.Forms.DataFormats]::FileDrop, [string[]]@('${SRC2}')); ` +
+  `[System.Windows.Forms.Clipboard]::SetDataObject($d, $false); ` +
+  `$end = (Get-Date).AddSeconds(60); while ((Get-Date) -lt $end) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 20 }`], { stdio: 'ignore' });
+await sleep(2500);
+console.log('Windows\' clipboard:', winFiles());
+await until(async () => (await acts()).some(a => /relat/.test(a) && /Ready|failed/i.test(a)), 30000);
+console.log('cards:', JSON.stringify(await acts()));
+const there2 = await until(async () => { const c = await clipThere(); return /relat/.test(c) && c; }, 20000);
+console.log('the Linux PC\'s clipboard:', there2 || await clipThere());
+ok(!!there2 && /relat%C3%B3rio%20final%20%C3%A7\.txt/.test(there2), 'a file with accents and spaces copied in Explorer is on the Linux PC\'s clipboard');
+explorerCopy2.kill();
+await clearActs();
+const FL2 = path.join(OUT, 'ação linux é.txt'); fs.writeFileSync(FL2, 'feito no linux');
+await putThere(FL2, home + '/copy-request');
+await until(async () => (await acts()).some(a => /linux é/.test(a) && /Ready|failed/i.test(a)), 30000);
+console.log('cards:', JSON.stringify(await acts()));
+const got2 = await until(() => { const l = winFiles(); return /linux/.test(l) && /\.txt/.test(l) && l; }, 20000);
+console.log('Windows\' clipboard:', got2 || winFiles());
+const exists2 = ps(`Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::GetFileDropList() | ForEach-Object { (Split-Path $_ -Leaf) + ' exists=' + (Test-Path -LiteralPath $_) }`);
+console.log('as Windows sees them:', exists2);
+ok(/exists=True/.test(exists2) && /ação linux é\.txt/.test(exists2), 'a file with accents copied on the Linux PC is on Windows\' clipboard, and the file exists');
+ps("Set-Clipboard -Value 'olá, ação: ü € 日本'");
+ok(await until(async () => /olá, ação: ü € 日本/.test(await clipThere()), 20000), 'text with accents reaches the Linux PC intact');
+
 section('logs');
 console.log('--- this app\'s log (Windows):\n' + logTail());
 // (tell the Linux PC it may stop: a file named cross-done in its home)
