@@ -841,7 +841,7 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
   const testWorker = !!(process.env.SCREENSHARE_TEST && process.env.SCREENSHARE_TEST_USERFS);
   function userWorker() {
     if (!(AGENT && (process.platform === 'win32' || testWorker))) return null;
-    if (ufs) { clearTimeout(ufsIdle); ufsIdle = setTimeout(stopUserWorker, 10 * 60 * 1000); return ufs; }
+    if (ufs) return ufs;
     const exe = helperExe();
     if (!testWorker && (!exe || exe.endsWith('.js'))) return null;
     if (Date.now() < ufsDownUntil) return null;
@@ -857,6 +857,7 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
       call(fn, ...args) {
         return new Promise((resolve, reject) => {
           if (ufs !== w) { reject(new Error('the file helper stopped')); return; }
+          clearTimeout(ufsIdle); ufsIdle = setTimeout(stopUserWorker, 10 * 60 * 1000);   // (ends after 10 idle minutes)
           const id = nextId++;
           waiting.set(id, { resolve, reject });
           proc.stdin.write(JSON.stringify({ id, fn, args: args.map(a => (a instanceof Uint8Array ? { b64: Buffer.from(a).toString('base64') } : a)) }) + '\n');
@@ -890,7 +891,6 @@ module.exports = function setupRemote({ readAppSettings, writeAppSettings, appDi
     ufs = w;
     w.ready = Promise.race([w.call('ping'), new Promise((_, no) => setTimeout(() => no(new Error('no answer')), 10000))])
       .then(v => { log(`files: working as ${v.user}`); return true; }, e => { log(`files: the helper for the signed-in user did not start: ${e.message}`); return false; });
-    ufsIdle = setTimeout(stopUserWorker, 10 * 60 * 1000);
     return w;
   }
   function stopUserWorker() { if (ufs) { const p = ufs.proc; ufs = null; try { p.kill(); } catch {} } }
