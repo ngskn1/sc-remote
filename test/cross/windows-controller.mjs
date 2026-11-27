@@ -146,10 +146,27 @@ ok(/exists=True/.test(exists2) && /ação linux é\.txt/.test(exists2), 'a file 
 ps("Set-Clipboard -Value 'olá, ação: ü € 日本'");
 ok(await until(async () => /olá, ação: ü € 日本/.test(await clipThere()), 20000), 'text with accents reaches the Linux PC intact');
 
+// why Explorer won't paste: the clipboard's formats and Explorer's Paste command, at each step
+section('Explorer\'s Paste: what changes it');
+const formats = () => ps("Add-Type -AssemblyName System.Windows.Forms; ([System.Windows.Forms.Clipboard]::GetDataObject().GetFormats()) -join ', '");
+const PT = path.join(OUT, 'paste-target'); fs.mkdirSync(PT, { recursive: true });
+const canPaste = () => /Paste/.test(ps(`$sh = New-Object -ComObject Shell.Application; ($sh.NameSpace('${OUT}').ParseName('paste-target').Verbs() | ForEach-Object { $_.Name -replace '&','' }) -join ','`));
+const state = what => console.log(`${canPaste() ? 'PASTE OK ' : 'NO PASTE '} ${what} | formats: ${formats()} | owner: ${ps("Add-Type -Name C -Namespace U -MemberDefinition '[DllImport(\"user32.dll\")] public static extern IntPtr GetClipboardOwner(); [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);'; $h = [U.C]::GetClipboardOwner(); $p = 0; [U.C]::GetWindowThreadProcessId($h, [ref]$p) | Out-Null; if ($p) { (Get-Process -Id $p).ProcessName + ' ' + $p } else { 'none' }")}`);
+state('now (a file from the Linux PC on the clipboard, SC-Remote open)');
+ps(`Set-Clipboard -Path '${FL}'`); await sleep(1500);
+state('after Set-Clipboard -Path, SC-Remote open');
+await clearActs();
+fs.writeFileSync(path.join(OUT, 'again.txt'), 'again'); await putThere(path.join(OUT, 'again.txt'), home + '/copy-request');
+await until(() => /again\.txt/.test(winFiles()), 20000); await sleep(1500);
+state('a second file from the Linux PC');
+await s.evaluate(() => R.clipWatch(false)); await sleep(2000);
+state('... after SC-Remote stopped watching the clipboard');
+
 section('logs');
 console.log('--- this app\'s log (Windows):\n' + logTail());
 // (tell the Linux PC it may stop: a file named cross-done in its home)
 fs.writeFileSync(path.join(OUT, 'cross-done'), '1'); await putThere(path.join(OUT, 'cross-done'), home).catch(() => {});
-await app.close().catch(() => {});
+await app.close().catch(() => {}); await sleep(2000);
+state('after SC-Remote closed');
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 process.exit(fails ? 1 : 0);
