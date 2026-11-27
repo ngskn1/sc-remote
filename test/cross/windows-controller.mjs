@@ -92,6 +92,25 @@ if (got) {
   const p = got.split(/\r?\n/).find(x => /from-linux\.txt$/.test(x));
   ps(`$sh = New-Object -ComObject Shell.Application; $sh.NameSpace('${DEST}').CopyHere('${p}', 16); Start-Sleep 2`);
   ok(fs.existsSync(path.join(DEST, 'from-linux.txt')) && fs.readFileSync(path.join(DEST, 'from-linux.txt'), 'utf8') === 'made on linux', 'pasting it in a folder gives the same file');
+  // what a person does: Paste in Explorer (the folder's own Paste command, which is greyed out when Explorer
+  // doesn't accept what is on the clipboard), and Ctrl+V in an Explorer window
+  const EX = path.join(OUT, 'explorer-paste'); fs.mkdirSync(EX, { recursive: true });
+  console.log('Explorer\'s commands on a folder:', ps(`$sh = New-Object -ComObject Shell.Application; $f = $sh.NameSpace('${OUT}').ParseName('explorer-paste'); ($f.Verbs() | ForEach-Object { $_.Name }) -join ' | '`));
+  console.log('Paste (the folder\'s command):', ps(`$sh = New-Object -ComObject Shell.Application; $f = $sh.NameSpace('${OUT}').ParseName('explorer-paste'); $v = $f.Verbs() | Where-Object { $_.Name -replace '&','' -eq 'Paste' }; if ($v) { $v.DoIt(); Start-Sleep 3; 'done' } else { 'no Paste command (greyed out)' }`));
+  ok(fs.existsSync(path.join(EX, 'from-linux.txt')), 'Explorer\'s Paste puts it in the folder: ' + fs.readdirSync(EX).join(', '));
+  const EX2 = path.join(OUT, 'explorer-ctrl-v'); fs.mkdirSync(EX2, { recursive: true });
+  console.log('Ctrl+V in an Explorer window:', ps(`
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -Name W -Namespace U -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);'
+    Start-Process explorer.exe '${EX2}'; Start-Sleep 4
+    $sh = New-Object -ComObject Shell.Application
+    $w = $sh.Windows() | Where-Object { try { $_.Document.Folder.Self.Path -eq '${EX2}' } catch { $false } } | Select-Object -First 1
+    if (-not $w) { 'no Explorer window' } else {
+      [U.W]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [U.W]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+      [U.W]::SetForegroundWindow([IntPtr]$w.HWND) | Out-Null; Start-Sleep 1
+      [System.Windows.Forms.SendKeys]::SendWait('^v'); Start-Sleep 3; $w.Quit(); 'sent'
+    }`));
+  ok(fs.existsSync(path.join(EX2, 'from-linux.txt')), 'Ctrl+V in an Explorer window pastes it: ' + fs.readdirSync(EX2).join(', '));
 }
 await sleep(5000);
 ok(/from-linux\.txt/.test(winFiles()), 'and still on Windows\' clipboard 5 s later: ' + winFiles());
